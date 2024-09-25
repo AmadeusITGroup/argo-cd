@@ -1,14 +1,12 @@
 issues:
   exclude:
-    - SA1019
     - SA5011
-  exclude-rules:
-    - path: "(applicationset|cmpserver|controller|pkg|reposerver)/"
-      text: "require-error:"
-      linters:
-        - testifylint
   max-issues-per-linter: 0
   max-same-issues: 0
+  exclude-rules:
+    - path: '(.+)_test\.go'
+      linters:
+        - unparam
 linters:
   enable:
     - errcheck
@@ -22,6 +20,7 @@ linters:
     - misspell
     - staticcheck
     - testifylint
+    - unparam
     - unused
     - whitespace 
 linters-settings:
@@ -41,8 +40,6 @@ linters-settings:
   testifylint:
     enable-all: true
     disable:
-      - error-is-as
-      - float-compare
       - go-require
 run:
   timeout: 50m

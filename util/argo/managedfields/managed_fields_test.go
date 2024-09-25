@@ -38,14 +38,16 @@ func TestNormalize(t *testing.T) {
 		liveReplicas, ok, err := unstructured.NestedFloat64(liveResult.Object, "spec", "replicas")
 		assert.False(t, ok)
 		require.NoError(t, err)
-		assert.Equal(t, liveReplicas, desiredReplicas)
+		assert.Zero(t, desiredReplicas)
+		assert.Zero(t, liveReplicas)
 		liveRevisionHistory, ok, err := unstructured.NestedFloat64(liveResult.Object, "spec", "revisionHistoryLimit")
 		assert.False(t, ok)
 		require.NoError(t, err)
 		desiredRevisionHistory, ok, err := unstructured.NestedFloat64(desiredResult.Object, "spec", "revisionHistoryLimit")
 		assert.False(t, ok)
 		require.NoError(t, err)
-		assert.Equal(t, liveRevisionHistory, desiredRevisionHistory)
+		assert.Zero(t, desiredRevisionHistory)
+		assert.Zero(t, liveRevisionHistory)
 	})
 	t.Run("will keep conflicting fields if not from trusted manager", func(t *testing.T) {
 		// given
@@ -141,12 +143,22 @@ func TestNormalize(t *testing.T) {
 		assert.Len(t, vwcConfig.Webhooks, 1)
 		assert.Equal(t, "", string(vwcConfig.Webhooks[0].ClientConfig.CABundle))
 	})
+	t.Run("does not fail if object fails validation schema", func(t *testing.T) {
+		desiredState := StrToUnstructured(testdata.DesiredDeploymentYaml)
+		require.NoError(t, unstructured.SetNestedField(desiredState.Object, "spec", "hello", "world"))
+		liveState := StrToUnstructured(testdata.LiveDeploymentWithManagedReplicaYaml)
+
+		pt := parser.Type("io.k8s.api.apps.v1.Deployment")
+
+		_, _, err := managedfields.Normalize(liveState, desiredState, []string{}, &pt)
+		require.NoError(t, err)
+	})
 }
 
 func validateNestedFloat64(t *testing.T, expected float64, obj *unstructured.Unstructured, fields ...string) {
 	t.Helper()
 	current := getNestedFloat64(t, obj, fields...)
-	assert.Equal(t, expected, current)
+	assert.InEpsilon(t, expected, current, 0.0001)
 }
 
 func getNestedFloat64(t *testing.T, obj *unstructured.Unstructured, fields ...string) float64 {

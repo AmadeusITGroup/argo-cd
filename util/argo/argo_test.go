@@ -99,6 +99,8 @@ func TestIncludeResource(t *testing.T) {
 		// !*:Service:*
 		excludeAllServiceResources = argoappv1.SyncOperationResource{Group: "*", Kind: "Service", Name: "*", Namespace: "", Exclude: true}
 		// apps:ReplicaSet:backend
+		includeAllReplicaSetResource = argoappv1.SyncOperationResource{Group: "apps", Kind: "ReplicaSet", Name: "*", Namespace: "", Exclude: false}
+		// apps:ReplicaSet:backend
 		includeReplicaSetResource = argoappv1.SyncOperationResource{Group: "apps", Kind: "ReplicaSet", Name: "backend", Namespace: "", Exclude: false}
 		// !apps:ReplicaSet:backend
 		excludeReplicaSetResource = argoappv1.SyncOperationResource{Group: "apps", Kind: "ReplicaSet", Name: "backend", Namespace: "", Exclude: true}
@@ -136,7 +138,7 @@ func TestIncludeResource(t *testing.T) {
 			namespace:             "default",
 			gvk:                   schema.GroupVersionKind{Group: "batch", Kind: "Job"},
 			syncOperationResource: []*argoappv1.SyncOperationResource{&excludeAllServiceResources, &includeReplicaSetResource},
-			expectedResult:        true,
+			expectedResult:        false,
 		},
 		// --resource !apps:ReplicaSet:backend --resource !*:Service:*
 		{
@@ -154,6 +156,15 @@ func TestIncludeResource(t *testing.T) {
 			namespace:             "default",
 			gvk:                   schema.GroupVersionKind{Group: "apps", Kind: "ReplicaSet"},
 			syncOperationResource: []*argoappv1.SyncOperationResource{&excludeReplicaSetResource},
+			expectedResult:        false,
+		},
+		// --resource !apps:ReplicaSet:backend --resource !*:Service:*
+		{
+			testName:              "Exclude ReplicaSet backend resource and all service resources(dummy condition)",
+			name:                  "backend",
+			namespace:             "default",
+			gvk:                   schema.GroupVersionKind{Group: "apps", Kind: "ReplicaSet"},
+			syncOperationResource: []*argoappv1.SyncOperationResource{&excludeReplicaSetResource, &excludeAllServiceResources},
 			expectedResult:        false,
 		},
 		// --resource apps:ReplicaSet:backend
@@ -183,6 +194,15 @@ func TestIncludeResource(t *testing.T) {
 			syncOperationResource: []*argoappv1.SyncOperationResource{&includeAllServiceResources},
 			expectedResult:        true,
 		},
+		// --resource apps:ReplicaSet:* --resource !apps:ReplicaSet:backend
+		{
+			testName:              "Include & Exclude ReplicaSet resources",
+			name:                  "backend",
+			namespace:             "default",
+			gvk:                   schema.GroupVersionKind{Group: "apps", Kind: "ReplicaSet"},
+			syncOperationResource: []*argoappv1.SyncOperationResource{&includeAllReplicaSetResource, &excludeReplicaSetResource},
+			expectedResult:        false,
+		},
 		// --resource !*:*:*
 		{
 			testName:              "Exclude all resources",
@@ -209,7 +229,10 @@ func TestIncludeResource(t *testing.T) {
 			syncOperationResource: []*argoappv1.SyncOperationResource{&blankValues},
 			expectedResult:        false,
 		},
-		{testName: "Default values"},
+		{
+			testName:       "Default values",
+			expectedResult: true,
+		},
 	}
 
 	for _, test := range tests {
@@ -1571,6 +1594,117 @@ func TestAugmentSyncMsg(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 				assert.Equal(t, tt.expectedMessage, msg)
+			}
+		})
+	}
+}
+
+func TestGetAppEventLabels(t *testing.T) {
+	tests := []struct {
+		name                string
+		cmInEventLabelKeys  string
+		cmExEventLabelKeys  string
+		appLabels           map[string]string
+		projLabels          map[string]string
+		expectedEventLabels map[string]string
+	}{
+		{
+			name:                "no label keys in cm - no event labels",
+			cmInEventLabelKeys:  "",
+			appLabels:           map[string]string{"team": "A", "tier": "frontend"},
+			projLabels:          map[string]string{"environment": "dev"},
+			expectedEventLabels: nil,
+		},
+		{
+			name:                "label keys in cm, no labels on app & proj - no event labels",
+			cmInEventLabelKeys:  "team, environment",
+			appLabels:           nil,
+			projLabels:          nil,
+			expectedEventLabels: nil,
+		},
+		{
+			name:                "labels on app, no labels on proj - event labels matched on app only",
+			cmInEventLabelKeys:  "team, environment",
+			appLabels:           map[string]string{"team": "A", "tier": "frontend"},
+			projLabels:          nil,
+			expectedEventLabels: map[string]string{"team": "A"},
+		},
+		{
+			name:                "no labels on app, labels on proj - event labels matched on proj only",
+			cmInEventLabelKeys:  "team, environment",
+			appLabels:           nil,
+			projLabels:          map[string]string{"environment": "dev"},
+			expectedEventLabels: map[string]string{"environment": "dev"},
+		},
+		{
+			name:                "labels on app & proj with conflicts - event labels matched on both app & proj and app labels prioritized on conflict",
+			cmInEventLabelKeys:  "team, environment",
+			appLabels:           map[string]string{"team": "A", "environment": "stage", "tier": "frontend"},
+			projLabels:          map[string]string{"environment": "dev"},
+			expectedEventLabels: map[string]string{"team": "A", "environment": "stage"},
+		},
+		{
+			name:                "wildcard support - matched all labels",
+			cmInEventLabelKeys:  "*",
+			appLabels:           map[string]string{"team": "A", "tier": "frontend"},
+			projLabels:          map[string]string{"environment": "dev"},
+			expectedEventLabels: map[string]string{"team": "A", "tier": "frontend", "environment": "dev"},
+		},
+		{
+			name:                "exclude event labels",
+			cmInEventLabelKeys:  "example.com/team,tier,env*",
+			cmExEventLabelKeys:  "tie*",
+			appLabels:           map[string]string{"example.com/team": "A", "tier": "frontend"},
+			projLabels:          map[string]string{"environment": "dev"},
+			expectedEventLabels: map[string]string{"example.com/team": "A", "environment": "dev"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cm := corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "argocd-cm",
+					Namespace: test.FakeArgoCDNamespace,
+					Labels: map[string]string{
+						"app.kubernetes.io/part-of": "argocd",
+					},
+				},
+				Data: map[string]string{
+					"resource.includeEventLabelKeys": tt.cmInEventLabelKeys,
+					"resource.excludeEventLabelKeys": tt.cmExEventLabelKeys,
+				},
+			}
+
+			proj := &argoappv1.AppProject{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default",
+					Namespace: test.FakeArgoCDNamespace,
+					Labels:    tt.projLabels,
+				},
+			}
+
+			var app argoappv1.Application
+			app.Name = "test-app"
+			app.Namespace = test.FakeArgoCDNamespace
+			app.Labels = tt.appLabels
+			appClientset := appclientset.NewSimpleClientset(proj)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			indexers := cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}
+			informer := v1alpha1.NewAppProjectInformer(appClientset, test.FakeArgoCDNamespace, 0, indexers)
+			go informer.Run(ctx.Done())
+			cache.WaitForCacheSync(ctx.Done(), informer.HasSynced)
+
+			kubeClient := fake.NewSimpleClientset(&cm)
+			settingsMgr := settings.NewSettingsManager(context.Background(), kubeClient, test.FakeArgoCDNamespace)
+			argoDB := db.NewDB("default", settingsMgr, kubeClient)
+
+			eventLabels := GetAppEventLabels(&app, applisters.NewAppProjectLister(informer.GetIndexer()), test.FakeArgoCDNamespace, settingsMgr, argoDB, ctx)
+			assert.Equal(t, len(tt.expectedEventLabels), len(eventLabels))
+			for ek, ev := range tt.expectedEventLabels {
+				v, found := eventLabels[ek]
+				assert.True(t, found)
+				assert.Equal(t, ev, v)
 			}
 		})
 	}

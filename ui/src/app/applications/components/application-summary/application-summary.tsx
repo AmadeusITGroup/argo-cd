@@ -263,7 +263,12 @@ export const ApplicationSummary = (props: ApplicationSummaryProps) => {
             view: app.spec.revisionHistoryLimit,
             edit: (formApi: FormApi) => (
                 <div style={{position: 'relative'}}>
-                    <FormField formApi={formApi} field='spec.revisionHistoryLimit' componentProps={{style: {paddingRight: '1em'}, placeholder: '10'}} component={NumberField} />
+                    <FormField
+                        formApi={formApi}
+                        field='spec.revisionHistoryLimit'
+                        componentProps={{style: {paddingRight: '1em', right: '1em'}, placeholder: '10'}}
+                        component={NumberField}
+                    />
                     <div style={{position: 'absolute', right: '0', top: '0'}}>
                         <HelpIcon
                             title='This limits the number of items kept in the apps revision history.
@@ -340,13 +345,17 @@ export const ApplicationSummary = (props: ApplicationSummaryProps) => {
             title: 'URLs',
             view: (
                 <React.Fragment>
-                    {urls
-                        .map(item => item.split('|'))
-                        .map((parts, i) => (
-                            <a key={i} href={parts.length > 1 ? parts[1] : parts[0]} target='__blank'>
-                                {parts[0]} &nbsp;
-                            </a>
-                        ))}
+                    <div className='application-summary__links-rows'>
+                        {urls
+                            .map(item => item.split('|'))
+                            .map((parts, i) => (
+                                <div className='application-summary__links-row'>
+                                    <a key={i} href={parts.length > 1 ? parts[1] : parts[0]} target='_blank'>
+                                        {parts[0]} &nbsp;
+                                    </a>
+                                </div>
+                            ))}
+                    </div>
                 </React.Fragment>
             )
         });

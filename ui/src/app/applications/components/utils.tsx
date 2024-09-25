@@ -7,7 +7,7 @@ import {FormApi, Text} from 'react-form';
 import * as moment from 'moment';
 import {BehaviorSubject, combineLatest, concat, from, fromEvent, Observable, Observer, Subscription} from 'rxjs';
 import {debounceTime, map} from 'rxjs/operators';
-import {Context, ContextApis} from '../../shared/context';
+import {AppContext, Context, ContextApis} from '../../shared/context';
 import {ResourceTreeNode} from './application-resource-tree/application-resource-tree';
 
 import {CheckboxField, COLORS, ErrorNotification, Revision} from '../../shared/components';
@@ -343,6 +343,46 @@ const deletePodAction = async (ctx: ContextApis, pod: appModels.ResourceNode, ap
                 }
             }
         }
+    );
+};
+
+export const deleteSourceAction = (app: appModels.Application, source: appModels.ApplicationSource, appContext: AppContext) => {
+    appContext.apis.popup.prompt(
+        'Delete source',
+        () => (
+            <div>
+                <p>
+                    <>
+                        Are you sure you want to delete the source with URL: <kbd>{source.repoURL}</kbd>
+                        {source.path ? (
+                            <>
+                                {' '}
+                                and path: <kbd>{source.path}</kbd>?
+                            </>
+                        ) : (
+                            <>?</>
+                        )}
+                    </>
+                </p>
+            </div>
+        ),
+        {
+            submit: async (vals, _, close) => {
+                try {
+                    const i = app.spec.sources.indexOf(source);
+                    app.spec.sources.splice(i, 1);
+                    await services.applications.update(app);
+                    close();
+                } catch (e) {
+                    appContext.apis.notifications.show({
+                        content: <ErrorNotification title='Unable to delete source' e={e} />,
+                        type: NotificationType.Error
+                    });
+                }
+            }
+        },
+        {name: 'argo-icon-warning', color: 'warning'},
+        'yellow'
     );
 };
 
@@ -773,7 +813,7 @@ export const HealthStatusIcon = ({state, noSpin}: {state: appModels.HealthStatus
     if (state.message) {
         title = `${state.status}: ${state.message}`;
     }
-    return <i qe-id='utils-health-status-title' title={title} className={'fa ' + icon} style={{color}} />;
+    return <i qe-id='utils-health-status-title' title={title} className={'fa ' + icon + ' utils-health-status-icon'} style={{color}} />;
 };
 
 export const PodHealthIcon = ({state}: {state: appModels.HealthStatus}) => {
@@ -1131,9 +1171,9 @@ export function getAppDefaultOperationSyncRevision(app?: appModels.Application) 
 
 // getAppCurrentVersion gets the first app revisions from `status.sync.revisions` or, if that list is missing or empty, the `revision`
 // field.
-export function getAppCurrentVersion(app?: appModels.Application) {
-    if (!app || !app.status || !app.status.history) {
-        return 0;
+export function getAppCurrentVersion(app?: appModels.Application): number | null {
+    if (!app || !app.status || !app.status.history || app.status.history.length === 0) {
+        return null;
     }
     return app.status.history[app.status.history.length - 1].id;
 }

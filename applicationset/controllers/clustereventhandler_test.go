@@ -6,6 +6,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,10 +23,10 @@ import (
 func TestClusterEventHandler(t *testing.T) {
 	scheme := runtime.NewScheme()
 	err := argov1alpha1.AddToScheme(scheme)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	err = argov1alpha1.AddToScheme(scheme)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	tests := []struct {
 		name             string
@@ -550,24 +551,18 @@ func TestClusterEventHandler(t *testing.T) {
 
 			handler.queueRelatedAppGenerators(context.Background(), &mockAddRateLimitingInterface, &test.secret)
 
-			assert.False(t, mockAddRateLimitingInterface.errorOccurred)
 			assert.ElementsMatch(t, mockAddRateLimitingInterface.addedItems, test.expectedRequests)
 		})
 	}
 }
 
 // Add checks the type, and adds it to the internal list of received additions
-func (obj *mockAddRateLimitingInterface) Add(item interface{}) {
-	if req, ok := item.(ctrl.Request); ok {
-		obj.addedItems = append(obj.addedItems, req)
-	} else {
-		obj.errorOccurred = true
-	}
+func (obj *mockAddRateLimitingInterface) Add(item reconcile.Request) {
+	obj.addedItems = append(obj.addedItems, item)
 }
 
 type mockAddRateLimitingInterface struct {
-	errorOccurred bool
-	addedItems    []ctrl.Request
+	addedItems []reconcile.Request
 }
 
 func TestNestedGeneratorHasClusterGenerator_NestedClusterGenerator(t *testing.T) {
@@ -577,7 +572,7 @@ func TestNestedGeneratorHasClusterGenerator_NestedClusterGenerator(t *testing.T)
 
 	hasClusterGenerator, err := nestedGeneratorHasClusterGenerator(nested)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, hasClusterGenerator)
 }
 
@@ -604,7 +599,7 @@ func TestNestedGeneratorHasClusterGenerator_NestedMergeGenerator(t *testing.T) {
 
 	hasClusterGenerator, err := nestedGeneratorHasClusterGenerator(nested)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, hasClusterGenerator)
 }
 
@@ -631,6 +626,6 @@ func TestNestedGeneratorHasClusterGenerator_NestedMergeGeneratorWithInvalidJSON(
 
 	hasClusterGenerator, err := nestedGeneratorHasClusterGenerator(nested)
 
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.False(t, hasClusterGenerator)
 }
