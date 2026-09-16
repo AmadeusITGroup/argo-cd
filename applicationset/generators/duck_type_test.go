@@ -1,8 +1,7 @@
 package generators
 
 import (
-	"context"
-	"fmt"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,15 +11,17 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	dynfake "k8s.io/client-go/dynamic/fake"
+	"k8s.io/client-go/dynamic/fake"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	argoprojiov1alpha1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	argoprojiov1alpha1 "github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v3/test"
+	"github.com/argoproj/argo-cd/v3/util/settings"
 )
 
 const (
-	resourceApiVersion = "mallard.io/v1"
+	resourceAPIVersion = "mallard.io/v1"
 	resourceKind       = "ducks"
 	resourceName       = "quak"
 )
@@ -28,21 +29,17 @@ const (
 func TestGenerateParamsForDuckType(t *testing.T) {
 	clusters := []client.Object{
 		&corev1.Secret{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "Secret",
-				APIVersion: "v1",
+			Kind:       "Secret",
+			APIVersion: "v1",
+			Name:       "staging-01",
+			Namespace:  "namespace",
+			Labels: map[string]string{
+				"argocd.argoproj.io/secret-type": "cluster",
+				"environment":                    "staging",
+				"org":                            "foo",
 			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "staging-01",
-				Namespace: "namespace",
-				Labels: map[string]string{
-					"argocd.argoproj.io/secret-type": "cluster",
-					"environment":                    "staging",
-					"org":                            "foo",
-				},
-				Annotations: map[string]string{
-					"foo.argoproj.io": "staging",
-				},
+			Annotations: map[string]string{
+				"foo.argoproj.io": "staging",
 			},
 			Data: map[string][]byte{
 				"config": []byte("{}"),
@@ -52,21 +49,17 @@ func TestGenerateParamsForDuckType(t *testing.T) {
 			Type: corev1.SecretType("Opaque"),
 		},
 		&corev1.Secret{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "Secret",
-				APIVersion: "v1",
+			Kind:       "Secret",
+			APIVersion: "v1",
+			Name:       "production-01",
+			Namespace:  "namespace",
+			Labels: map[string]string{
+				"argocd.argoproj.io/secret-type": "cluster",
+				"environment":                    "production",
+				"org":                            "bar",
 			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "production-01",
-				Namespace: "namespace",
-				Labels: map[string]string{
-					"argocd.argoproj.io/secret-type": "cluster",
-					"environment":                    "production",
-					"org":                            "bar",
-				},
-				Annotations: map[string]string{
-					"foo.argoproj.io": "production",
-				},
+			Annotations: map[string]string{
+				"foo.argoproj.io": "production",
 			},
 			Data: map[string][]byte{
 				"config": []byte("{}"),
@@ -78,20 +71,20 @@ func TestGenerateParamsForDuckType(t *testing.T) {
 	}
 
 	duckType := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": resourceApiVersion,
+		Object: map[string]any{
+			"apiVersion": resourceAPIVersion,
 			"kind":       "Duck",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      resourceName,
 				"namespace": "namespace",
-				"labels":    map[string]interface{}{"duck": "all-species"},
+				"labels":    map[string]any{"duck": "all-species"},
 			},
-			"status": map[string]interface{}{
-				"decisions": []interface{}{
-					map[string]interface{}{
+			"status": map[string]any{
+				"decisions": []any{
+					map[string]any{
 						"clusterName": "staging-01",
 					},
-					map[string]interface{}{
+					map[string]any{
 						"clusterName": "production-01",
 					},
 				},
@@ -100,17 +93,17 @@ func TestGenerateParamsForDuckType(t *testing.T) {
 	}
 
 	duckTypeProdOnly := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": resourceApiVersion,
+		Object: map[string]any{
+			"apiVersion": resourceAPIVersion,
 			"kind":       "Duck",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      resourceName,
 				"namespace": "namespace",
-				"labels":    map[string]interface{}{"duck": "spotted"},
+				"labels":    map[string]any{"duck": "spotted"},
 			},
-			"status": map[string]interface{}{
-				"decisions": []interface{}{
-					map[string]interface{}{
+			"status": map[string]any{
+				"decisions": []any{
+					map[string]any{
 						"clusterName": "production-01",
 					},
 				},
@@ -118,26 +111,45 @@ func TestGenerateParamsForDuckType(t *testing.T) {
 		},
 	}
 
-	duckTypeEmpty := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": resourceApiVersion,
+	duckTypeWithNonStringValues := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": resourceAPIVersion,
 			"kind":       "Duck",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      resourceName,
 				"namespace": "namespace",
-				"labels":    map[string]interface{}{"duck": "canvasback"},
+				"labels":    map[string]any{"duck": "all-species"},
 			},
-			"status": map[string]interface{}{},
+			"status": map[string]any{
+				"decisions": []any{
+					map[string]any{
+						"clusterName": "staging-01",
+						"reason":      "",
+						"score":       int64(0),
+					},
+				},
+			},
+		},
+	}
+
+	duckTypeEmpty := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": resourceAPIVersion,
+			"kind":       "Duck",
+			"metadata": map[string]any{
+				"name":      resourceName,
+				"namespace": "namespace",
+				"labels":    map[string]any{"duck": "canvasback"},
+			},
+			"status": map[string]any{},
 		},
 	}
 
 	configMap := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "my-configmap",
-			Namespace: "namespace",
-		},
+		Name:      "my-configmap",
+		Namespace: "namespace",
 		Data: map[string]string{
-			"apiVersion":    resourceApiVersion,
+			"apiVersion":    resourceAPIVersion,
 			"kind":          resourceKind,
 			"statusListKey": "decisions",
 			"matchKey":      "clusterName",
@@ -151,7 +163,7 @@ func TestGenerateParamsForDuckType(t *testing.T) {
 		labelSelector metav1.LabelSelector
 		resource      *unstructured.Unstructured
 		values        map[string]string
-		expected      []map[string]interface{}
+		expected      []map[string]any
 		expectedError error
 	}{
 		{
@@ -159,8 +171,8 @@ func TestGenerateParamsForDuckType(t *testing.T) {
 			resourceName:  "",
 			resource:      duckType,
 			values:        nil,
-			expected:      []map[string]interface{}{},
-			expectedError: fmt.Errorf("There is a problem with the definition of the ClusterDecisionResource generator"),
+			expected:      []map[string]any{},
+			expectedError: errors.New("there is a problem with the definition of the ClusterDecisionResource generator"),
 		},
 		/*** This does not work with the FAKE runtime client, fieldSelectors are broken.
 		{
@@ -177,10 +189,20 @@ func TestGenerateParamsForDuckType(t *testing.T) {
 			resourceName: resourceName,
 			resource:     duckType,
 			values:       nil,
-			expected: []map[string]interface{}{
+			expected: []map[string]any{
 				{"clusterName": "production-01", "name": "production-01", "server": "https://production-01.example.com"},
 
 				{"clusterName": "staging-01", "name": "staging-01", "server": "https://staging-01.example.com"},
+			},
+			expectedError: nil,
+		},
+		{
+			name:         "non-string values in cluster decisions are converted to strings",
+			resourceName: resourceName,
+			resource:     duckTypeWithNonStringValues,
+			values:       nil,
+			expected: []map[string]any{
+				{"clusterName": "staging-01", "reason": "", "score": "0", "name": "staging-01", "server": "https://staging-01.example.com"},
 			},
 			expectedError: nil,
 		},
@@ -191,7 +213,7 @@ func TestGenerateParamsForDuckType(t *testing.T) {
 			values: map[string]string{
 				"foo": "bar",
 			},
-			expected: []map[string]interface{}{
+			expected: []map[string]any{
 				{"clusterName": "production-01", "values.foo": "bar", "name": "production-01", "server": "https://production-01.example.com"},
 			},
 			expectedError: nil,
@@ -219,7 +241,7 @@ func TestGenerateParamsForDuckType(t *testing.T) {
 			labelSelector: metav1.LabelSelector{MatchLabels: map[string]string{"duck": "all-species"}},
 			resource:      duckType,
 			values:        nil,
-			expected: []map[string]interface{}{
+			expected: []map[string]any{
 				{"clusterName": "production-01", "name": "production-01", "server": "https://production-01.example.com"},
 
 				{"clusterName": "staging-01", "name": "staging-01", "server": "https://staging-01.example.com"},
@@ -234,7 +256,7 @@ func TestGenerateParamsForDuckType(t *testing.T) {
 			values: map[string]string{
 				"foo": "bar",
 			},
-			expected: []map[string]interface{}{
+			expected: []map[string]any{
 				{"clusterName": "production-01", "values.foo": "bar", "name": "production-01", "server": "https://production-01.example.com"},
 			},
 			expectedError: nil,
@@ -251,7 +273,7 @@ func TestGenerateParamsForDuckType(t *testing.T) {
 			}},
 			resource: duckType,
 			values:   nil,
-			expected: []map[string]interface{}{
+			expected: []map[string]any{
 				{"clusterName": "production-01", "name": "production-01", "server": "https://production-01.example.com"},
 
 				{"clusterName": "staging-01", "name": "staging-01", "server": "https://staging-01.example.com"},
@@ -271,7 +293,7 @@ func TestGenerateParamsForDuckType(t *testing.T) {
 			resource:      duckType,
 			values:        nil,
 			expected:      nil,
-			expectedError: fmt.Errorf("There is a problem with the definition of the ClusterDecisionResource generator"),
+			expectedError: errors.New("there is a problem with the definition of the ClusterDecisionResource generator"),
 		},
 	}
 
@@ -291,14 +313,17 @@ func TestGenerateParamsForDuckType(t *testing.T) {
 				Resource: "ducks",
 			}: "DuckList"}
 
-			fakeDynClient := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), gvrToListKind, testCase.resource)
+			fakeDynClient := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), gvrToListKind, testCase.resource)
 
-			duckTypeGenerator := NewDuckTypeGenerator(context.Background(), fakeDynClient, appClientset, "namespace")
+			clusterInformer, err := settings.NewClusterInformer(appClientset, "namespace")
+			require.NoError(t, err)
+
+			defer test.StartInformer(clusterInformer)()
+
+			duckTypeGenerator := NewDuckTypeGenerator(t.Context(), fakeDynClient, appClientset, "namespace", clusterInformer)
 
 			applicationSetInfo := argoprojiov1alpha1.ApplicationSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "set",
-				},
+				Name: "set",
 				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
 			}
 
@@ -324,21 +349,17 @@ func TestGenerateParamsForDuckType(t *testing.T) {
 func TestGenerateParamsForDuckTypeGoTemplate(t *testing.T) {
 	clusters := []client.Object{
 		&corev1.Secret{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "Secret",
-				APIVersion: "v1",
+			Kind:       "Secret",
+			APIVersion: "v1",
+			Name:       "staging-01",
+			Namespace:  "namespace",
+			Labels: map[string]string{
+				"argocd.argoproj.io/secret-type": "cluster",
+				"environment":                    "staging",
+				"org":                            "foo",
 			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "staging-01",
-				Namespace: "namespace",
-				Labels: map[string]string{
-					"argocd.argoproj.io/secret-type": "cluster",
-					"environment":                    "staging",
-					"org":                            "foo",
-				},
-				Annotations: map[string]string{
-					"foo.argoproj.io": "staging",
-				},
+			Annotations: map[string]string{
+				"foo.argoproj.io": "staging",
 			},
 			Data: map[string][]byte{
 				"config": []byte("{}"),
@@ -348,21 +369,17 @@ func TestGenerateParamsForDuckTypeGoTemplate(t *testing.T) {
 			Type: corev1.SecretType("Opaque"),
 		},
 		&corev1.Secret{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "Secret",
-				APIVersion: "v1",
+			Kind:       "Secret",
+			APIVersion: "v1",
+			Name:       "production-01",
+			Namespace:  "namespace",
+			Labels: map[string]string{
+				"argocd.argoproj.io/secret-type": "cluster",
+				"environment":                    "production",
+				"org":                            "bar",
 			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "production-01",
-				Namespace: "namespace",
-				Labels: map[string]string{
-					"argocd.argoproj.io/secret-type": "cluster",
-					"environment":                    "production",
-					"org":                            "bar",
-				},
-				Annotations: map[string]string{
-					"foo.argoproj.io": "production",
-				},
+			Annotations: map[string]string{
+				"foo.argoproj.io": "production",
 			},
 			Data: map[string][]byte{
 				"config": []byte("{}"),
@@ -374,20 +391,20 @@ func TestGenerateParamsForDuckTypeGoTemplate(t *testing.T) {
 	}
 
 	duckType := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": resourceApiVersion,
+		Object: map[string]any{
+			"apiVersion": resourceAPIVersion,
 			"kind":       "Duck",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      resourceName,
 				"namespace": "namespace",
-				"labels":    map[string]interface{}{"duck": "all-species"},
+				"labels":    map[string]any{"duck": "all-species"},
 			},
-			"status": map[string]interface{}{
-				"decisions": []interface{}{
-					map[string]interface{}{
+			"status": map[string]any{
+				"decisions": []any{
+					map[string]any{
 						"clusterName": "staging-01",
 					},
-					map[string]interface{}{
+					map[string]any{
 						"clusterName": "production-01",
 					},
 				},
@@ -396,17 +413,17 @@ func TestGenerateParamsForDuckTypeGoTemplate(t *testing.T) {
 	}
 
 	duckTypeProdOnly := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": resourceApiVersion,
+		Object: map[string]any{
+			"apiVersion": resourceAPIVersion,
 			"kind":       "Duck",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      resourceName,
 				"namespace": "namespace",
-				"labels":    map[string]interface{}{"duck": "spotted"},
+				"labels":    map[string]any{"duck": "spotted"},
 			},
-			"status": map[string]interface{}{
-				"decisions": []interface{}{
-					map[string]interface{}{
+			"status": map[string]any{
+				"decisions": []any{
+					map[string]any{
 						"clusterName": "production-01",
 					},
 				},
@@ -415,25 +432,23 @@ func TestGenerateParamsForDuckTypeGoTemplate(t *testing.T) {
 	}
 
 	duckTypeEmpty := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": resourceApiVersion,
+		Object: map[string]any{
+			"apiVersion": resourceAPIVersion,
 			"kind":       "Duck",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      resourceName,
 				"namespace": "namespace",
-				"labels":    map[string]interface{}{"duck": "canvasback"},
+				"labels":    map[string]any{"duck": "canvasback"},
 			},
-			"status": map[string]interface{}{},
+			"status": map[string]any{},
 		},
 	}
 
 	configMap := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "my-configmap",
-			Namespace: "namespace",
-		},
+		Name:      "my-configmap",
+		Namespace: "namespace",
 		Data: map[string]string{
-			"apiVersion":    resourceApiVersion,
+			"apiVersion":    resourceAPIVersion,
 			"kind":          resourceKind,
 			"statusListKey": "decisions",
 			"matchKey":      "clusterName",
@@ -447,7 +462,7 @@ func TestGenerateParamsForDuckTypeGoTemplate(t *testing.T) {
 		labelSelector metav1.LabelSelector
 		resource      *unstructured.Unstructured
 		values        map[string]string
-		expected      []map[string]interface{}
+		expected      []map[string]any
 		expectedError error
 	}{
 		{
@@ -455,8 +470,8 @@ func TestGenerateParamsForDuckTypeGoTemplate(t *testing.T) {
 			resourceName:  "",
 			resource:      duckType,
 			values:        nil,
-			expected:      []map[string]interface{}{},
-			expectedError: fmt.Errorf("There is a problem with the definition of the ClusterDecisionResource generator"),
+			expected:      []map[string]any{},
+			expectedError: errors.New("there is a problem with the definition of the ClusterDecisionResource generator"),
 		},
 		/*** This does not work with the FAKE runtime client, fieldSelectors are broken.
 		{
@@ -473,7 +488,7 @@ func TestGenerateParamsForDuckTypeGoTemplate(t *testing.T) {
 			resourceName: resourceName,
 			resource:     duckType,
 			values:       nil,
-			expected: []map[string]interface{}{
+			expected: []map[string]any{
 				{"clusterName": "production-01", "name": "production-01", "server": "https://production-01.example.com"},
 
 				{"clusterName": "staging-01", "name": "staging-01", "server": "https://staging-01.example.com"},
@@ -487,7 +502,7 @@ func TestGenerateParamsForDuckTypeGoTemplate(t *testing.T) {
 			values: map[string]string{
 				"foo": "bar",
 			},
-			expected: []map[string]interface{}{
+			expected: []map[string]any{
 				{"clusterName": "production-01", "values": map[string]string{"foo": "bar"}, "name": "production-01", "server": "https://production-01.example.com"},
 			},
 			expectedError: nil,
@@ -515,7 +530,7 @@ func TestGenerateParamsForDuckTypeGoTemplate(t *testing.T) {
 			labelSelector: metav1.LabelSelector{MatchLabels: map[string]string{"duck": "all-species"}},
 			resource:      duckType,
 			values:        nil,
-			expected: []map[string]interface{}{
+			expected: []map[string]any{
 				{"clusterName": "production-01", "name": "production-01", "server": "https://production-01.example.com"},
 
 				{"clusterName": "staging-01", "name": "staging-01", "server": "https://staging-01.example.com"},
@@ -530,7 +545,7 @@ func TestGenerateParamsForDuckTypeGoTemplate(t *testing.T) {
 			values: map[string]string{
 				"foo": "bar",
 			},
-			expected: []map[string]interface{}{
+			expected: []map[string]any{
 				{"clusterName": "production-01", "values": map[string]string{"foo": "bar"}, "name": "production-01", "server": "https://production-01.example.com"},
 			},
 			expectedError: nil,
@@ -547,7 +562,7 @@ func TestGenerateParamsForDuckTypeGoTemplate(t *testing.T) {
 			}},
 			resource: duckType,
 			values:   nil,
-			expected: []map[string]interface{}{
+			expected: []map[string]any{
 				{"clusterName": "production-01", "name": "production-01", "server": "https://production-01.example.com"},
 
 				{"clusterName": "staging-01", "name": "staging-01", "server": "https://staging-01.example.com"},
@@ -567,7 +582,7 @@ func TestGenerateParamsForDuckTypeGoTemplate(t *testing.T) {
 			resource:      duckType,
 			values:        nil,
 			expected:      nil,
-			expectedError: fmt.Errorf("There is a problem with the definition of the ClusterDecisionResource generator"),
+			expectedError: errors.New("there is a problem with the definition of the ClusterDecisionResource generator"),
 		},
 	}
 
@@ -587,14 +602,17 @@ func TestGenerateParamsForDuckTypeGoTemplate(t *testing.T) {
 				Resource: "ducks",
 			}: "DuckList"}
 
-			fakeDynClient := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), gvrToListKind, testCase.resource)
+			fakeDynClient := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), gvrToListKind, testCase.resource)
 
-			duckTypeGenerator := NewDuckTypeGenerator(context.Background(), fakeDynClient, appClientset, "namespace")
+			clusterInformer, err := settings.NewClusterInformer(appClientset, "namespace")
+			require.NoError(t, err)
+
+			defer test.StartInformer(clusterInformer)()
+
+			duckTypeGenerator := NewDuckTypeGenerator(t.Context(), fakeDynClient, appClientset, "namespace", clusterInformer)
 
 			applicationSetInfo := argoprojiov1alpha1.ApplicationSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "set",
-				},
+				Name: "set",
 				Spec: argoprojiov1alpha1.ApplicationSetSpec{
 					GoTemplate: true,
 				},

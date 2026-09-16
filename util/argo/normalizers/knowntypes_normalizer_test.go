@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application"
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application"
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v3/util/errors"
 
-	"github.com/argoproj/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -49,8 +49,7 @@ func mustUnmarshalYAML(yamlStr string) *unstructured.Unstructured {
 	return un
 }
 
-// nolint:unparam
-func nestedSliceMap(obj map[string]interface{}, i int, path ...string) (map[string]interface{}, error) {
+func nestedSliceMap(obj map[string]any, i int, path ...string) (map[string]any, error) {
 	items, ok, err := unstructured.NestedSlice(obj, path...)
 	if err != nil {
 		return nil, err
@@ -61,14 +60,15 @@ func nestedSliceMap(obj map[string]interface{}, i int, path ...string) (map[stri
 	if len(items) < i {
 		return nil, fmt.Errorf("field %s has less than %d items", strings.Join(path, "."), i)
 	}
-	if item, ok := items[i].(map[string]interface{}); !ok {
+	item, ok := items[i].(map[string]any)
+	if !ok {
 		return nil, fmt.Errorf("field %s[%d] is not map", strings.Join(path, "."), i)
-	} else {
-		return item, nil
 	}
+	return item, nil
 }
 
 func TestNormalize_MapField(t *testing.T) {
+	t.Parallel()
 	normalizer, err := NewKnownTypesNormalizer(map[string]v1alpha1.ResourceOverride{
 		crdGroupKind: {
 			KnownTypeFields: []v1alpha1.KnownTypeField{{
@@ -103,6 +103,7 @@ func TestNormalize_MapField(t *testing.T) {
 }
 
 func TestNormalize_FieldInNestedSlice(t *testing.T) {
+	t.Parallel()
 	rollout := mustUnmarshalYAML(someCRDYaml)
 	normalizer, err := NewKnownTypesNormalizer(map[string]v1alpha1.ResourceOverride{
 		crdGroupKind: {
@@ -128,6 +129,7 @@ func TestNormalize_FieldInNestedSlice(t *testing.T) {
 }
 
 func TestNormalize_FieldInDoubleNestedSlice(t *testing.T) {
+	t.Parallel()
 	rollout := mustUnmarshalYAML(`apiVersion: some.io/v1alpha1
 kind: TestCRD
 metadata:
@@ -175,6 +177,7 @@ spec:
 }
 
 func TestNormalize_Quantity(t *testing.T) {
+	t.Parallel()
 	rollout := mustUnmarshalYAML(`apiVersion: some.io/v1alpha1
 kind: TestCRD
 metadata:
@@ -201,6 +204,7 @@ spec:
 }
 
 func TestNormalize_Duration(t *testing.T) {
+	t.Parallel()
 	cert := mustUnmarshalYAML(`
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -228,6 +232,7 @@ spec:
 }
 
 func TestFieldDoesNotExist(t *testing.T) {
+	t.Parallel()
 	rollout := mustUnmarshalYAML(someCRDYaml)
 	normalizer, err := NewKnownTypesNormalizer(map[string]v1alpha1.ResourceOverride{
 		crdGroupKind: {
@@ -253,6 +258,7 @@ func TestFieldDoesNotExist(t *testing.T) {
 }
 
 func TestRolloutPreConfigured(t *testing.T) {
+	t.Parallel()
 	normalizer, err := NewKnownTypesNormalizer(map[string]v1alpha1.ResourceOverride{})
 	require.NoError(t, err)
 	_, ok := normalizer.typeFields[schema.GroupKind{Group: application.Group, Kind: "Rollout"}]
@@ -260,6 +266,7 @@ func TestRolloutPreConfigured(t *testing.T) {
 }
 
 func TestOverrideKeyWithoutGroup(t *testing.T) {
+	t.Parallel()
 	normalizer, err := NewKnownTypesNormalizer(map[string]v1alpha1.ResourceOverride{
 		"ConfigMap": {
 			KnownTypeFields: []v1alpha1.KnownTypeField{{
@@ -274,9 +281,10 @@ func TestOverrideKeyWithoutGroup(t *testing.T) {
 }
 
 func TestKnownTypes(t *testing.T) {
+	t.Parallel()
 	typesData, err := os.ReadFile("./diffing_known_types.txt")
 	require.NoError(t, err)
-	for _, typeName := range strings.Split(string(typesData), "\n") {
+	for typeName := range strings.SplitSeq(string(typesData), "\n") {
 		if typeName = strings.TrimSpace(typeName); typeName == "" {
 			continue
 		}

@@ -2,11 +2,14 @@ package metrics
 
 import (
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/sync/semaphore"
 )
+
+var testSemaphoreMutex sync.Mutex
 
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
@@ -21,8 +24,15 @@ func TestEdgeCasesAndErrorHandling(t *testing.T) {
 	}{
 		{
 			name: "lsRemoteParallelismLimitSemaphore is nil",
-			testFunc: func(t *testing.T) {
+			setup: func() {
+				testSemaphoreMutex.Lock()
 				lsRemoteParallelismLimitSemaphore = nil
+				testSemaphoreMutex.Unlock()
+			},
+			testFunc: func(t *testing.T) {
+				t.Helper()
+				testSemaphoreMutex.Lock()
+				defer testSemaphoreMutex.Unlock()
 				assert.NotPanics(t, func() {
 					NewGitClientEventHandlers(&MetricsServer{})
 				})
@@ -31,12 +41,19 @@ func TestEdgeCasesAndErrorHandling(t *testing.T) {
 		{
 			name: "lsRemoteParallelismLimitSemaphore is not nil",
 			setup: func() {
+				testSemaphoreMutex.Lock()
 				lsRemoteParallelismLimitSemaphore = semaphore.NewWeighted(1)
+				testSemaphoreMutex.Unlock()
 			},
 			teardown: func() {
+				testSemaphoreMutex.Lock()
 				lsRemoteParallelismLimitSemaphore = nil
+				testSemaphoreMutex.Unlock()
 			},
 			testFunc: func(t *testing.T) {
+				t.Helper()
+				testSemaphoreMutex.Lock()
+				defer testSemaphoreMutex.Unlock()
 				assert.NotPanics(t, func() {
 					NewGitClientEventHandlers(&MetricsServer{})
 				})
@@ -45,12 +62,19 @@ func TestEdgeCasesAndErrorHandling(t *testing.T) {
 		{
 			name: "lsRemoteParallelismLimitSemaphore is not nil and Acquire returns error",
 			setup: func() {
+				testSemaphoreMutex.Lock()
 				lsRemoteParallelismLimitSemaphore = semaphore.NewWeighted(1)
+				testSemaphoreMutex.Unlock()
 			},
 			teardown: func() {
+				testSemaphoreMutex.Lock()
 				lsRemoteParallelismLimitSemaphore = nil
+				testSemaphoreMutex.Unlock()
 			},
 			testFunc: func(t *testing.T) {
+				t.Helper()
+				testSemaphoreMutex.Lock()
+				defer testSemaphoreMutex.Unlock()
 				assert.NotPanics(t, func() {
 					NewGitClientEventHandlers(&MetricsServer{})
 				})
@@ -71,7 +95,7 @@ func TestEdgeCasesAndErrorHandling(t *testing.T) {
 }
 
 func TestSemaphoreFunctionality(t *testing.T) {
-	os.Setenv("ARGOCD_GIT_LSREMOTE_PARALLELISM_LIMIT", "1")
+	t.Setenv("ARGOCD_GIT_LSREMOTE_PARALLELISM_LIMIT", "1")
 
 	tests := []struct {
 		name     string
@@ -82,12 +106,19 @@ func TestSemaphoreFunctionality(t *testing.T) {
 		{
 			name: "lsRemoteParallelismLimitSemaphore is not nil",
 			setup: func() {
+				testSemaphoreMutex.Lock()
 				lsRemoteParallelismLimitSemaphore = semaphore.NewWeighted(1)
+				testSemaphoreMutex.Unlock()
 			},
 			teardown: func() {
+				testSemaphoreMutex.Lock()
 				lsRemoteParallelismLimitSemaphore = nil
+				testSemaphoreMutex.Unlock()
 			},
 			testFunc: func(t *testing.T) {
+				t.Helper()
+				testSemaphoreMutex.Lock()
+				defer testSemaphoreMutex.Unlock()
 				assert.NotPanics(t, func() {
 					NewGitClientEventHandlers(&MetricsServer{})
 				})
@@ -96,12 +127,19 @@ func TestSemaphoreFunctionality(t *testing.T) {
 		{
 			name: "lsRemoteParallelismLimitSemaphore is not nil and Acquire returns error",
 			setup: func() {
+				testSemaphoreMutex.Lock()
 				lsRemoteParallelismLimitSemaphore = semaphore.NewWeighted(1)
+				testSemaphoreMutex.Unlock()
 			},
 			teardown: func() {
+				testSemaphoreMutex.Lock()
 				lsRemoteParallelismLimitSemaphore = nil
+				testSemaphoreMutex.Unlock()
 			},
 			testFunc: func(t *testing.T) {
+				t.Helper()
+				testSemaphoreMutex.Lock()
+				defer testSemaphoreMutex.Unlock()
 				assert.NotPanics(t, func() {
 					NewGitClientEventHandlers(&MetricsServer{})
 				})

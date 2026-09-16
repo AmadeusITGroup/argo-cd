@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -10,24 +11,22 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/argoproj/argo-cd/v2/common"
-	appsv1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
-	certutil "github.com/argoproj/argo-cd/v2/util/cert"
+	"github.com/argoproj/argo-cd/v3/common"
+	appsv1 "github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	certutil "github.com/argoproj/argo-cd/v3/util/cert"
 )
 
-// A struct representing an entry in the list of SSH known hosts.
+// SSHKnownHostsEntry represents an entry in the list of SSH known hosts.
 type SSHKnownHostsEntry struct {
 	// Hostname the key is for
 	Host string
 	// The type of the key
 	SubType string
-	// The data of the key, including the type
+	// The base64 encoded key data, without the key type
 	Data string
-	// The SHA256 fingerprint of the key
-	Fingerprint string
 }
 
-// A representation of a TLS certificate
+// TLSCertificate represents a TLS certificate.
 type TLSCertificate struct {
 	// Subject of the certificate
 	Subject string
@@ -37,7 +36,7 @@ type TLSCertificate struct {
 	Data string
 }
 
-// Helper struct for certificate selection
+// CertificateListSelector is a helper struct for certificate selection.
 type CertificateListSelector struct {
 	// Pattern to match the hostname with
 	HostNamePattern string
@@ -47,7 +46,7 @@ type CertificateListSelector struct {
 	CertSubType string
 }
 
-// Get a list of all configured repository certificates matching the given
+// ListRepoCertificates returns a list of all configured repository certificates matching the given
 // selector. The list of certificates explicitly excludes the CertData of
 // the certificates, and only returns the metadata including CertInfo field.
 //
@@ -55,8 +54,8 @@ type CertificateListSelector struct {
 //   - For SSH keys, the SHA256 fingerprint of the key as string, prepended by
 //     the string "SHA256:"
 //   - For TLS certs, the Subject of the X509 cert as a string in DN notation
-func (db *db) ListRepoCertificates(ctx context.Context, selector *CertificateListSelector) (*appsv1.RepositoryCertificateList, error) {
-	// selector may be given as nil, but we need at least an empty data structure
+func (db *db) ListRepoCertificates(_ context.Context, selector *CertificateListSelector) (*appsv1.RepositoryCertificateList, error) {
+	// selector may be given as nil, but we need at least an empty data structure,
 	// so we create it if necessary.
 	if selector == nil {
 		selector = &CertificateListSelector{}
@@ -72,12 +71,12 @@ func (db *db) ListRepoCertificates(ctx context.Context, selector *CertificateLis
 		}
 
 		for _, entry := range sshKnownHosts {
-			if certutil.MatchHostName(entry.Host, selector.HostNamePattern) && (selector.CertSubType == "" || selector.CertSubType == "*" || selector.CertSubType == entry.SubType) {
+			if matchSSHKnownHostsEntry(entry, selector) {
 				certificates = append(certificates, appsv1.RepositoryCertificate{
 					ServerName:  entry.Host,
 					CertType:    "ssh",
 					CertSubType: entry.SubType,
-					CertInfo:    "SHA256:" + certutil.SSHFingerprintSHA256FromString(fmt.Sprintf("%s %s", entry.Host, entry.Data)),
+					CertInfo:    sshKnownHostsFingerprint(entry),
 				})
 			}
 		}
@@ -121,37 +120,32 @@ func (db *db) ListRepoCertificates(ctx context.Context, selector *CertificateLis
 	}, nil
 }
 
-// Get a single certificate from the datastore
-func (db *db) GetRepoCertificate(ctx context.Context, serverType string, serverName string) (*appsv1.RepositoryCertificate, error) {
-	if serverType == "ssh" {
-		sshKnownHostsList, err := db.getSSHKnownHostsData()
-		if err != nil {
-			return nil, err
-		}
-		for _, entry := range sshKnownHostsList {
-			if entry.Host == serverName {
-				repo := &appsv1.RepositoryCertificate{
-					ServerName:  entry.Host,
-					CertType:    "ssh",
-					CertSubType: entry.SubType,
-					CertData:    []byte(entry.Data),
-					CertInfo:    entry.Fingerprint,
-				}
-				return repo, nil
-			}
-		}
-	}
-
-	// Fail
-	return nil, nil
+// sshFingerprintSHA256 returns the fingerprint of an SSH public key in the
+// format emitted by ssh-keygen(1), i.e. the base64 encoded SHA256 hash of the
+// key prefixed with "SHA256:".
+func sshFingerprintSHA256(key ssh.PublicKey) string {
+	return "SHA256:" + certutil.SSHFingerprintSHA256(key)
 }
 
-// Create one or more repository certificates and returns a list of certificates
+// sshKnownHostsFingerprint returns the fingerprint of the key held by an SSH
+// known hosts entry. Entries are only validated syntactically when they are
+// read from the ConfigMap, so the key data may still be unparseable - in that
+// case we return an empty string rather than a bare "SHA256:" prefix.
+func sshKnownHostsFingerprint(entry *SSHKnownHostsEntry) string {
+	_, pubKey, err := certutil.TokenizedDataToPublicKey(entry.Host, entry.SubType, entry.Data)
+	if err != nil {
+		log.Warnf("Could not parse SSH known hosts key for host %q of type %q: %v", entry.Host, entry.SubType, err)
+		return ""
+	}
+	return sshFingerprintSHA256(pubKey)
+}
+
+// CreateRepoCertificate creates one or more repository certificates and returns a list of certificates
 // actually created.
 func (db *db) CreateRepoCertificate(ctx context.Context, certificates *appsv1.RepositoryCertificateList, upsert bool) (*appsv1.RepositoryCertificateList, error) {
 	var (
-		saveSSHData bool = false
-		saveTLSData bool = false
+		saveSSHData = false
+		saveTLSData = false
 	)
 
 	sshKnownHostsList, err := db.getSSHKnownHostsData()
@@ -174,10 +168,10 @@ func (db *db) CreateRepoCertificate(ctx context.Context, certificates *appsv1.Re
 		// For SSH known host entries, we let Go's ssh library do the validation
 		// later on.
 		if certificate.CertType == "https" && !certutil.IsValidHostname(certificate.ServerName, false) {
-			return nil, fmt.Errorf("Invalid hostname in request: %s", certificate.ServerName)
+			return nil, fmt.Errorf("invalid hostname in request: %s", certificate.ServerName)
 		} else if certificate.CertType == "ssh" {
 			// Matches "[hostname]:port" format
-			reExtract := regexp.MustCompile(`^\[(.*)\]\:[0-9]+$`)
+			reExtract := regexp.MustCompile(`^\[(.*)]:\d+$`)
 			matches := reExtract.FindStringSubmatch(certificate.ServerName)
 			var hostnameToCheck string
 			if len(matches) == 0 {
@@ -186,11 +180,12 @@ func (db *db) CreateRepoCertificate(ctx context.Context, certificates *appsv1.Re
 				hostnameToCheck = matches[1]
 			}
 			if !certutil.IsValidHostname(hostnameToCheck, false) {
-				return nil, fmt.Errorf("Invalid hostname in request: %s", hostnameToCheck)
+				return nil, fmt.Errorf("invalid hostname in request: %s", hostnameToCheck)
 			}
 		}
 
-		if certificate.CertType == "ssh" {
+		switch certificate.CertType {
+		case "ssh":
 			// Whether we have a new certificate entry
 			newEntry := true
 			// Whether we have upserted an existing certificate entry
@@ -202,22 +197,21 @@ func (db *db) CreateRepoCertificate(ctx context.Context, certificates *appsv1.Re
 			for _, entry := range sshKnownHostsList {
 				if entry.Host == certificate.ServerName && entry.SubType == certificate.CertSubType {
 					if !upsert && entry.Data != string(certificate.CertData) {
-						return nil, fmt.Errorf("Key for '%s' (subtype: '%s') already exist and upsert was not specified.", entry.Host, entry.SubType)
-					} else {
-						// Do not add an entry on upsert, but remember if we actual did an
-						// upsert.
-						newEntry = false
-						if entry.Data != string(certificate.CertData) {
-							entry.Data = string(certificate.CertData)
-							upserted = true
-						}
-						break
+						return nil, fmt.Errorf("key for '%s' (subtype: '%s') already exists, and upsert was not specified", entry.Host, entry.SubType)
 					}
+					// Do not add an entry on upsert, but remember if we actually did an
+					// upsert.
+					newEntry = false
+					if entry.Data != string(certificate.CertData) {
+						entry.Data = string(certificate.CertData)
+						upserted = true
+					}
+					break
 				}
 			}
 
 			// Make sure that we received a valid public host key by parsing it
-			_, hostnames, rawKeyData, _, _, err := ssh.ParseKnownHosts([]byte(fmt.Sprintf("%s %s %s", certificate.ServerName, certificate.CertSubType, certificate.CertData)))
+			_, hostnames, rawKeyData, _, _, err := ssh.ParseKnownHosts(fmt.Appendf(nil, "%s %s %s", certificate.ServerName, certificate.CertSubType, certificate.CertData))
 			if err != nil {
 				return nil, err
 			}
@@ -237,12 +231,12 @@ func (db *db) CreateRepoCertificate(ctx context.Context, certificates *appsv1.Re
 			// If we created a new entry, or if we upserted an existing one, we need
 			// to save the data and notify the consumer about the operation.
 			if newEntry || upserted {
-				certificate.CertInfo = certutil.SSHFingerprintSHA256(rawKeyData)
+				certificate.CertInfo = sshFingerprintSHA256(rawKeyData)
 				created = append(created, certificate)
 				saveSSHData = true
 			}
-		} else if certificate.CertType == "https" {
-			var tlsCertificate *TLSCertificate = nil
+		case "https":
+			var tlsCertificate *TLSCertificate
 			newEntry := true
 			upserted := false
 			pemCreated := make([]string, 0)
@@ -253,7 +247,7 @@ func (db *db) CreateRepoCertificate(ctx context.Context, certificates *appsv1.Re
 					newEntry = false
 					if entry.Data != string(certificate.CertData) {
 						if !upsert {
-							return nil, fmt.Errorf("TLS certificate for server '%s' already exist and upsert was not specified.", entry.Subject)
+							return nil, fmt.Errorf("TLS certificate for server '%s' already exists, and upsert was not specified", entry.Subject)
 						}
 					}
 					// Store pointer to this entry for later use.
@@ -270,7 +264,7 @@ func (db *db) CreateRepoCertificate(ctx context.Context, certificates *appsv1.Re
 
 			// We should have at least one valid PEM entry
 			if len(pemData) == 0 {
-				return nil, fmt.Errorf("No valid PEM data received.")
+				return nil, errors.New("no valid PEM data received")
 			}
 
 			// Make sure we have valid X509 certificates in the data
@@ -308,9 +302,9 @@ func (db *db) CreateRepoCertificate(ctx context.Context, certificates *appsv1.Re
 				}
 				saveTLSData = true
 			}
-		} else {
+		default:
 			// Invalid/unknown certificate type
-			return nil, fmt.Errorf("Unknown certificate type: %s", certificate.CertType)
+			return nil, fmt.Errorf("unknown certificate type: %s", certificate.CertType)
 		}
 	}
 
@@ -331,7 +325,7 @@ func (db *db) CreateRepoCertificate(ctx context.Context, certificates *appsv1.Re
 	return &appsv1.RepositoryCertificateList{Items: created}, nil
 }
 
-// Batch remove configured certificates according to the selector query
+// RemoveRepoCertificates removes configured certificates according to the selector query
 func (db *db) RemoveRepoCertificates(ctx context.Context, selector *CertificateListSelector) (*appsv1.RepositoryCertificateList, error) {
 	var (
 		knownHostsOld      []*SSHKnownHostsEntry
@@ -375,7 +369,7 @@ func (db *db) RemoveRepoCertificates(ctx context.Context, selector *CertificateL
 		for _, entry := range tlsCertificatesOld {
 			if certutil.MatchHostName(entry.Subject, selector.HostNamePattern) {
 				// Wrap each PEM certificate into its own RepositoryCertificate object
-				// so the caller knows what has been removed actually.
+				// so the caller knows what has actually been removed.
 				//
 				// The downside of this is, only valid data can be removed from the CM,
 				// so if the data somehow got corrupted, it can only be removed by

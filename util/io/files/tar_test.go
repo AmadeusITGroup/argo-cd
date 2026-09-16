@@ -14,11 +14,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/argoproj/argo-cd/v2/test"
-	"github.com/argoproj/argo-cd/v2/util/io/files"
+	"github.com/argoproj/argo-cd/v3/test"
+	"github.com/argoproj/argo-cd/v3/util/io/files"
 )
 
 func TestTgz(t *testing.T) {
+	t.Parallel()
+
 	type fixture struct {
 		file *os.File
 	}
@@ -108,31 +110,21 @@ func TestUntgz(t *testing.T) {
 	createTmpDir := func(t *testing.T) string {
 		t.Helper()
 		tmpDir, err := os.MkdirTemp(getTestDataDir(t), "")
-		if err != nil {
-			t.Fatalf("error creating tmpDir: %s", err)
-		}
+		require.NoErrorf(t, err, "error creating tmpDir: %s", err)
 		return tmpDir
 	}
 	deleteTmpDir := func(t *testing.T, dirname string) {
 		t.Helper()
-		err := os.RemoveAll(dirname)
-		if err != nil {
-			t.Errorf("error removing tmpDir: %s", err)
-		}
+		assert.NoError(t, os.RemoveAll(dirname), "error removing tmpDir")
 	}
 	createTgz := func(t *testing.T, fromDir, destDir string) *os.File {
 		t.Helper()
 		f, err := os.CreateTemp(destDir, "")
-		if err != nil {
-			t.Fatalf("error creating tmpFile in %q: %s", destDir, err)
-		}
+		require.NoErrorf(t, err, "error creating tmpFile in %q: %s", destDir, err)
 		_, err = files.Tgz(fromDir, nil, nil, f)
-		if err != nil {
-			t.Fatalf("error during Tgz: %s", err)
-		}
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			t.Fatalf("seek error: %s", err)
-		}
+		require.NoErrorf(t, err, "error during Tgz: %s", err)
+		_, err = f.Seek(0, io.SeekStart)
+		require.NoErrorf(t, err, "seek error: %s", err)
 		return f
 	}
 	readFiles := func(t *testing.T, basedir string) map[string]string {
@@ -154,9 +146,7 @@ func TestUntgz(t *testing.T) {
 			names[relativePath] = link
 			return nil
 		})
-		if err != nil {
-			t.Fatalf("error reading files: %s", err)
-		}
+		require.NoErrorf(t, err, "error reading files: %s", err)
 		return names
 	}
 	t.Run("will untgz successfully", func(t *testing.T) {
@@ -179,7 +169,7 @@ func TestUntgz(t *testing.T) {
 		assert.Contains(t, names, "applicationset/latest/kustomization.yaml")
 		assert.Contains(t, names, "applicationset/stable/kustomization.yaml")
 		assert.Contains(t, names, "applicationset/readme-symlink")
-		assert.Equal(t, filepath.Join(destDir, "README.md"), names["applicationset/readme-symlink"])
+		assert.Equal(t, "../README.md", names["applicationset/readme-symlink"])
 	})
 	t.Run("will protect against symlink exploit", func(t *testing.T) {
 		// given
@@ -195,28 +185,187 @@ func TestUntgz(t *testing.T) {
 		err := files.Untgz(destDir, tgzFile, math.MaxInt64, false)
 
 		// then
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "illegal filepath in symlink")
+		assert.ErrorContains(t, err, "illegal filepath in symlink")
+	})
+	t.Run("will protect against symlink exploit when relativizing symlinks", func(t *testing.T) {
+		// given
+		tmpDir := createTmpDir(t)
+		defer deleteTmpDir(t, tmpDir)
+		tgzFile := createTgz(t, filepath.Join(getTestDataDir(t), "symlink-exploit"), tmpDir)
+
+		defer tgzFile.Close()
+
+		destDir := filepath.Join(tmpDir, "untgz2")
+
+		// when
+		err := files.Untgz(destDir, tgzFile, math.MaxInt64, false)
+
+		// then
+		assert.ErrorContains(t, err, "illegal filepath in symlink")
 	})
 
 	t.Run("preserves file mode", func(t *testing.T) {
 		// given
 		tmpDir := createTmpDir(t)
 		defer deleteTmpDir(t, tmpDir)
-		tgzFile := createTgz(t, filepath.Join(getTestDataDir(t), "executable"), tmpDir)
+
+		scriptFileName := "script.sh"
+		srcDir := filepath.Join(getTestDataDir(t), "executable")
+		srcScriptFileInfo, err := os.Stat(path.Join(srcDir, scriptFileName))
+		require.NoError(t, err)
+
+		tgzFile := createTgz(t, srcDir, tmpDir)
 		defer tgzFile.Close()
 
 		destDir := filepath.Join(tmpDir, "untgz1")
 
 		// when
-		err := files.Untgz(destDir, tgzFile, math.MaxInt64, false)
+		err = files.Untgz(destDir, tgzFile, math.MaxInt64, true)
 		require.NoError(t, err)
+		// then
+		scriptFileInfo, err := os.Stat(path.Join(destDir, scriptFileName))
+		require.NoError(t, err)
+		assert.Equal(t, srcScriptFileInfo.Mode(), scriptFileInfo.Mode())
+	})
+	t.Run("relativizes symlinks", func(t *testing.T) {
+		// given
+		tmpDir := createTmpDir(t)
+		defer deleteTmpDir(t, tmpDir)
+		tgzFile := createTgz(t, getTestAppDir(t), tmpDir)
+		defer tgzFile.Close()
+
+		destDir := filepath.Join(tmpDir, "symlink-relativize")
+
+		// when
+		err := files.Untgz(destDir, tgzFile, math.MaxInt64, false)
 
 		// then
-
-		scriptFileInfo, err := os.Stat(path.Join(destDir, "script.sh"))
 		require.NoError(t, err)
-		assert.Equal(t, os.FileMode(0o644), scriptFileInfo.Mode())
+		names := readFiles(t, destDir)
+		assert.Equal(t, "../README.md", names["applicationset/readme-symlink"])
+	})
+}
+
+func TestTgz_HelmChartInclusionExclusions(t *testing.T) {
+	t.Parallel()
+
+	helmAppDir := filepath.Join(getTestDataDir(t), "helm-app")
+
+	type fixture struct {
+		file *os.File
+	}
+	setup := func(t *testing.T) *fixture {
+		t.Helper()
+		f, err := os.CreateTemp(getTestDataDir(t), "")
+		require.NoError(t, err)
+		return &fixture{file: f}
+	}
+	teardown := func(f *fixture) {
+		f.file.Close()
+		os.Remove(f.file.Name())
+	}
+	prepareRead := func(t *testing.T, f *fixture) {
+		t.Helper()
+		_, err := f.file.Seek(0, io.SeekStart)
+		require.NoError(t, err)
+	}
+
+	t.Run("default patterns include helm helper templates after fix", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t)
+		defer teardown(f)
+		inclusions := []string{"*.yaml", "*.yml", "*.json", "*.tpl", "Chart.lock"}
+
+		_, err := files.Tgz(helmAppDir, inclusions, nil, f.file)
+		require.NoError(t, err)
+		prepareRead(t, f)
+		got, err := read(f.file)
+		require.NoError(t, err)
+
+		assert.Contains(t, got, "templates/_helpers.tpl",
+			"root chart _helpers.tpl should be included by *.tpl pattern")
+		assert.Contains(t, got, "charts/podinfo/templates/_helpers.tpl",
+			"sub-chart _helpers.tpl should be included by *.tpl pattern")
+		assert.Contains(t, got, "Chart.lock",
+			"Chart.lock should be included by Chart.lock pattern")
+		assert.Contains(t, got, "charts/podinfo/templates/deployment.yaml")
+		assert.Contains(t, got, "charts/podinfo/Chart.yaml")
+		assert.Contains(t, got, "charts/podinfo/values.yaml")
+	})
+
+	t.Run("explicit charts/** pattern includes everything in charts", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t)
+		defer teardown(f)
+		inclusions := []string{"*.yaml", "*.yml", "*.json", "charts/**"}
+
+		_, err := files.Tgz(helmAppDir, inclusions, nil, f.file)
+		require.NoError(t, err)
+		prepareRead(t, f)
+		got, err := read(f.file)
+		require.NoError(t, err)
+
+		assert.Contains(t, got, "charts/podinfo/templates/_helpers.tpl",
+			"_helpers.tpl must be included when charts/** is in the inclusion list")
+		assert.Contains(t, got, "charts/podinfo/templates/deployment.yaml")
+		assert.Contains(t, got, "charts/podinfo/Chart.yaml")
+		assert.Contains(t, got, "charts/podinfo/values.yaml")
+		assert.Contains(t, got, "kustomization.yaml")
+	})
+
+	t.Run("wildcard star includes all files including helm helpers", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t)
+		defer teardown(f)
+
+		_, err := files.Tgz(helmAppDir, []string{"*"}, nil, f.file)
+		require.NoError(t, err)
+		prepareRead(t, f)
+		got, err := read(f.file)
+		require.NoError(t, err)
+
+		assert.Contains(t, got, "charts/podinfo/templates/_helpers.tpl")
+		assert.Contains(t, got, "kustomization.yaml")
+	})
+
+	t.Run("exclude charts/** excludes all helm chart files", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t)
+		defer teardown(f)
+
+		exclusions := []string{"charts/**"}
+
+		_, err := files.Tgz(helmAppDir, nil, exclusions, f.file)
+		require.NoError(t, err)
+		prepareRead(t, f)
+		got, err := read(f.file)
+		require.NoError(t, err)
+
+		assert.NotContains(t, got, "charts/podinfo/templates/_helpers.tpl")
+		assert.NotContains(t, got, "charts/podinfo/templates/deployment.yaml")
+		assert.NotContains(t, got, "charts/podinfo/Chart.yaml")
+		assert.NotContains(t, got, "charts/podinfo/values.yaml")
+		assert.Contains(t, got, "kustomization.yaml")
+	})
+
+	t.Run("selective path exclusion filters only matching files", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t)
+		defer teardown(f)
+
+		inclusions := []string{"charts/**"}
+		exclusions := []string{"charts/**/templates/*.yaml"}
+
+		_, err := files.Tgz(helmAppDir, inclusions, exclusions, f.file)
+		require.NoError(t, err)
+		prepareRead(t, f)
+		got, err := read(f.file)
+		require.NoError(t, err)
+
+		assert.NotContains(t, got, "charts/podinfo/templates/deployment.yaml")
+		assert.Contains(t, got, "charts/podinfo/templates/_helpers.tpl")
+		assert.Contains(t, got, "charts/podinfo/Chart.yaml")
+		assert.Contains(t, got, "charts/podinfo/values.yaml")
 	})
 }
 
@@ -252,11 +401,13 @@ func read(tgz *os.File) (map[string]string, error) {
 // getTestAppDir will return the full path of the app dir under
 // the 'testdata' folder.
 func getTestAppDir(t *testing.T) string {
+	t.Helper()
 	return filepath.Join(getTestDataDir(t), "app")
 }
 
 // getTestDataDir will return the full path of the testdata dir
 // under the running test folder.
 func getTestDataDir(t *testing.T) string {
+	t.Helper()
 	return filepath.Join(test.GetTestDir(t), "testdata")
 }

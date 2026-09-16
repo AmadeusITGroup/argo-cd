@@ -1,16 +1,20 @@
 package settings
 
-import "github.com/argoproj/argo-cd/v2/util/glob"
+import "github.com/argoproj/argo-cd/v3/util/glob"
 
 type FilteredResource struct {
 	APIGroups []string `json:"apiGroups,omitempty"`
 	Kinds     []string `json:"kinds,omitempty"`
 	Clusters  []string `json:"clusters,omitempty"`
+	// Selector narrows the filter down to the resources whose labels match the selector. The value
+	// is a label selector in its string form, e.g. `foo=bar,!baz`, and is passed as is to the
+	// list/watch calls. An empty selector matches every resource.
+	Selector string `json:"selector,omitempty"`
 }
 
 func (r FilteredResource) matchGroup(apiGroup string) bool {
-	for _, excludedApiGroup := range r.APIGroups {
-		if glob.Match(excludedApiGroup, apiGroup) {
+	for _, excludedAPIGroup := range r.APIGroups {
+		if glob.Match(excludedAPIGroup, apiGroup) {
 			return true
 		}
 	}

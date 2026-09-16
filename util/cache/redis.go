@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
+	"sync"
 	"time"
 
-	ioutil "github.com/argoproj/argo-cd/v2/util/io"
+	"github.com/argoproj/argo-cd/v3/util/env"
+	utilio "github.com/argoproj/argo-cd/v3/util/io"
 
 	rediscache "github.com/go-redis/cache/v9"
 	"github.com/redis/go-redis/v9"
@@ -22,6 +25,14 @@ type RedisCompressionType string
 var (
 	RedisCompressionNone RedisCompressionType = "none"
 	RedisCompressionGZip RedisCompressionType = "gzip"
+)
+
+const (
+	// envRedisKeyPrefix is an env variable name which stores the prefix for redis keys
+	envRedisKeyPrefix = "ARGOCD_REDIS_KEY_PREFIX"
+	// redisNoSuchKeyErr is the error string Redis returns from RENAME when the source key does not
+	// exist. It is treated as a cache miss rather than a failed request.
+	redisNoSuchKeyErr = "ERR no such key"
 )
 
 func CompressionTypeFromString(s string) (RedisCompressionType, error) {
@@ -40,6 +51,7 @@ func NewRedisCache(client *redis.Client, expiration time.Duration, compressionTy
 		expiration:           expiration,
 		cache:                rediscache.New(&rediscache.Options{Redis: client}),
 		redisCompressionType: compressionType,
+		prefix:               env.StringFromEnv(envRedisKeyPrefix, ""),
 	}
 }
 
@@ -51,18 +63,21 @@ type redisCache struct {
 	client               *redis.Client
 	cache                *rediscache.Cache
 	redisCompressionType RedisCompressionType
+	// prefix is added to all keys stored in redis
+	prefix string
 }
 
 func (r *redisCache) getKey(key string) string {
+	prefixedKey := r.prefix + key
 	switch r.redisCompressionType {
 	case RedisCompressionGZip:
-		return key + ".gz"
+		return prefixedKey + ".gz"
 	default:
-		return key
+		return prefixedKey
 	}
 }
 
-func (r *redisCache) marshal(obj interface{}) ([]byte, error) {
+func (r *redisCache) marshal(obj any) ([]byte, error) {
 	buf := bytes.NewBuffer([]byte{})
 	var w io.Writer = buf
 	if r.redisCompressionType == RedisCompressionGZip {
@@ -86,15 +101,15 @@ func (r *redisCache) marshal(obj interface{}) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (r *redisCache) unmarshal(data []byte, obj interface{}) error {
+func (r *redisCache) unmarshal(data []byte, obj any) error {
 	buf := bytes.NewReader(data)
 	var reader io.Reader = buf
 	if r.redisCompressionType == RedisCompressionGZip {
-		if gzipReader, err := gzip.NewReader(buf); err != nil {
+		gzipReader, err := gzip.NewReader(buf)
+		if err != nil {
 			return err
-		} else {
-			reader = gzipReader
 		}
+		reader = gzipReader
 	}
 	if err := json.NewDecoder(reader).Decode(obj); err != nil {
 		return fmt.Errorf("failed to decode cached data: %w", err)
@@ -104,7 +119,7 @@ func (r *redisCache) unmarshal(data []byte, obj interface{}) error {
 
 func (r *redisCache) Rename(oldKey string, newKey string, _ time.Duration) error {
 	err := r.client.Rename(context.TODO(), r.getKey(oldKey), r.getKey(newKey)).Err()
-	if err != nil && err.Error() == "ERR no such key" {
+	if err != nil && err.Error() == redisNoSuchKeyErr {
 		err = ErrCacheMiss
 	}
 
@@ -130,7 +145,7 @@ func (r *redisCache) Set(item *Item) error {
 	})
 }
 
-func (r *redisCache) Get(key string, obj interface{}) error {
+func (r *redisCache) Get(key string, obj any) error {
 	var data []byte
 	err := r.cache.Get(context.TODO(), r.getKey(key), &data)
 	if errors.Is(err, rediscache.ErrCacheMiss) {
@@ -148,7 +163,7 @@ func (r *redisCache) Delete(key string) error {
 
 func (r *redisCache) OnUpdated(ctx context.Context, key string, callback func() error) error {
 	pubsub := r.client.Subscribe(ctx, key)
-	defer ioutil.Close(pubsub)
+	defer utilio.Close(pubsub)
 
 	ch := pubsub.Channel()
 	for {
@@ -168,12 +183,40 @@ func (r *redisCache) NotifyUpdated(key string) error {
 }
 
 type MetricsRegistry interface {
-	IncRedisRequest(failed bool)
+	IncRedisRequest(command string, failed bool)
 	ObserveRedisRequestDuration(duration time.Duration)
 }
 
 type redisHook struct {
 	registry MetricsRegistry
+}
+
+// ignoredRedisCommandNames are commands that go-redis may issue during connection setup / bookkeeping
+// and which we don't want to count as application-level requests in metrics.
+var ignoredRedisCommandNames = map[string]struct{}{
+	"hello":  {},
+	"client": {},
+	// Optional: we can enable if we want also want to exclude other setup/noise commands.
+	// "auth":   {},
+	// "select": {},
+	// "ping":   {},
+}
+
+// redisCmdName returns the normalized (lower-cased, trimmed) name of a Redis command
+func redisCmdName(cmd redis.Cmder) string {
+	return strings.ToLower(strings.TrimSpace(cmd.Name()))
+}
+
+func shouldIgnoreRedisCmd(cmd redis.Cmder) bool {
+	_, ok := ignoredRedisCommandNames[redisCmdName(cmd)]
+	return ok
+}
+
+// isBenignRedisMiss reports whether err represents a benign cache miss rather than a real Redis
+// failure. redis.Nil is the normal "key not found" reply, and "ERR no such key" is returned by
+// RENAME when the source key is absent; neither should be counted as a failed request.
+func isBenignRedisMiss(err error) bool {
+	return errors.Is(err, redis.Nil) || (err != nil && err.Error() == redisNoSuchKeyErr)
 }
 
 func (rh *redisHook) DialHook(next redis.DialHook) redis.DialHook {
@@ -188,18 +231,28 @@ func (rh *redisHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 		startTime := time.Now()
 
 		err := next(ctx, cmd)
-		rh.registry.IncRedisRequest(err != nil && !errors.Is(err, redis.Nil))
+
+		if shouldIgnoreRedisCmd(cmd) {
+			return err
+		}
+
+		rh.registry.IncRedisRequest(redisCmdName(cmd), err != nil && !isBenignRedisMiss(err))
 		rh.registry.ObserveRedisRequestDuration(time.Since(startTime))
 
 		return err
 	}
 }
 
-func (redisHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+func (redisHook) ProcessPipelineHook(_ redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return nil
 }
 
 // CollectMetrics add transport wrapper that pushes metrics into the specified metrics registry
-func CollectMetrics(client *redis.Client, registry MetricsRegistry) {
+// Lock should be shared between functions that can add/process a Redis hook.
+func CollectMetrics(client *redis.Client, registry MetricsRegistry, lock *sync.RWMutex) {
+	if lock != nil {
+		lock.Lock()
+		defer lock.Unlock()
+	}
 	client.AddHook(&redisHook{registry: registry})
 }

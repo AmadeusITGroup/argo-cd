@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	. "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
-	cacheutil "github.com/argoproj/argo-cd/v2/util/cache"
+	. "github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	cacheutil "github.com/argoproj/argo-cd/v3/util/cache"
 )
 
 type fixtures struct {
@@ -24,6 +24,7 @@ func newFixtures() *fixtures {
 }
 
 func TestCache_GetAppManagedResources(t *testing.T) {
+	t.Parallel()
 	cache := newFixtures().Cache
 	// cache miss
 	value := &[]*ResourceDiff{}
@@ -42,6 +43,7 @@ func TestCache_GetAppManagedResources(t *testing.T) {
 }
 
 func TestCache_GetAppResourcesTree(t *testing.T) {
+	t.Parallel()
 	cache := newFixtures().Cache
 	// cache miss
 	value := &ApplicationTree{}
@@ -59,7 +61,27 @@ func TestCache_GetAppResourcesTree(t *testing.T) {
 	assert.Equal(t, &ApplicationTree{Nodes: []ResourceNode{{}}}, value)
 }
 
+func TestCache_GetClusterInfo(t *testing.T) {
+	t.Parallel()
+	cache := newFixtures().Cache
+	// cache miss
+	res := &ClusterInfo{}
+	err := cache.GetClusterInfo("http://minikube", res)
+	assert.Equal(t, ErrCacheMiss, err)
+	// populate cache
+	err = cache.SetClusterInfo("http://kind-cluster", &ClusterInfo{ServerVersion: "0.24.0"})
+	require.NoError(t, err)
+	// cache miss
+	err = cache.GetClusterInfo("http://kind-clusterss", res)
+	assert.Equal(t, ErrCacheMiss, err)
+	// cache hit
+	err = cache.GetClusterInfo("http://kind-cluster", res)
+	require.NoError(t, err)
+	assert.Equal(t, &ClusterInfo{ServerVersion: "0.24.0"}, res)
+}
+
 func TestAddCacheFlagsToCmd(t *testing.T) {
+	t.Parallel()
 	cache, err := AddCacheFlagsToCmd(&cobra.Command{})()
 	require.NoError(t, err)
 	assert.Equal(t, 1*time.Hour, cache.appStateCacheExpiration)

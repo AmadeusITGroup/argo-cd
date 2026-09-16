@@ -1,21 +1,17 @@
 package scm_provider
 
 import (
-	"context"
 	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	argoprojiov1alpha1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	argoprojiov1alpha1 "github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 )
 
-func strp(s string) *string {
-	return &s
-}
-
 func TestFilterRepoMatch(t *testing.T) {
+	t.Parallel()
 	provider := &MockProvider{
 		Repos: []*Repository{
 			{
@@ -34,10 +30,10 @@ func TestFilterRepoMatch(t *testing.T) {
 	}
 	filters := []argoprojiov1alpha1.SCMProviderGeneratorFilter{
 		{
-			RepositoryMatch: strp("n|hr"),
+			RepositoryMatch: new("n|hr"),
 		},
 	}
-	repos, err := ListRepos(context.Background(), provider, filters, "")
+	repos, err := ListRepos(t.Context(), provider, filters, "")
 	require.NoError(t, err)
 	assert.Len(t, repos, 2)
 	assert.Equal(t, "one", repos[0].Repository)
@@ -45,6 +41,7 @@ func TestFilterRepoMatch(t *testing.T) {
 }
 
 func TestFilterLabelMatch(t *testing.T) {
+	t.Parallel()
 	provider := &MockProvider{
 		Repos: []*Repository{
 			{
@@ -63,10 +60,10 @@ func TestFilterLabelMatch(t *testing.T) {
 	}
 	filters := []argoprojiov1alpha1.SCMProviderGeneratorFilter{
 		{
-			LabelMatch: strp("^prod-.*$"),
+			LabelMatch: new("^prod-.*$"),
 		},
 	}
-	repos, err := ListRepos(context.Background(), provider, filters, "")
+	repos, err := ListRepos(t.Context(), provider, filters, "")
 	require.NoError(t, err)
 	assert.Len(t, repos, 2)
 	assert.Equal(t, "one", repos[0].Repository)
@@ -74,6 +71,7 @@ func TestFilterLabelMatch(t *testing.T) {
 }
 
 func TestFilterPathExists(t *testing.T) {
+	t.Parallel()
 	provider := &MockProvider{
 		Repos: []*Repository{
 			{
@@ -92,13 +90,14 @@ func TestFilterPathExists(t *testing.T) {
 			PathsExist: []string{"two"},
 		},
 	}
-	repos, err := ListRepos(context.Background(), provider, filters, "")
+	repos, err := ListRepos(t.Context(), provider, filters, "")
 	require.NoError(t, err)
 	assert.Len(t, repos, 1)
 	assert.Equal(t, "two", repos[0].Repository)
 }
 
 func TestFilterPathDoesntExists(t *testing.T) {
+	t.Parallel()
 	provider := &MockProvider{
 		Repos: []*Repository{
 			{
@@ -117,12 +116,13 @@ func TestFilterPathDoesntExists(t *testing.T) {
 			PathsDoNotExist: []string{"two"},
 		},
 	}
-	repos, err := ListRepos(context.Background(), provider, filters, "")
+	repos, err := ListRepos(t.Context(), provider, filters, "")
 	require.NoError(t, err)
 	assert.Len(t, repos, 2)
 }
 
 func TestFilterRepoMatchBadRegexp(t *testing.T) {
+	t.Parallel()
 	provider := &MockProvider{
 		Repos: []*Repository{
 			{
@@ -132,14 +132,15 @@ func TestFilterRepoMatchBadRegexp(t *testing.T) {
 	}
 	filters := []argoprojiov1alpha1.SCMProviderGeneratorFilter{
 		{
-			RepositoryMatch: strp("("),
+			RepositoryMatch: new("("),
 		},
 	}
-	_, err := ListRepos(context.Background(), provider, filters, "")
+	_, err := ListRepos(t.Context(), provider, filters, "")
 	require.Error(t, err)
 }
 
 func TestFilterLabelMatchBadRegexp(t *testing.T) {
+	t.Parallel()
 	provider := &MockProvider{
 		Repos: []*Repository{
 			{
@@ -149,14 +150,15 @@ func TestFilterLabelMatchBadRegexp(t *testing.T) {
 	}
 	filters := []argoprojiov1alpha1.SCMProviderGeneratorFilter{
 		{
-			LabelMatch: strp("("),
+			LabelMatch: new("("),
 		},
 	}
-	_, err := ListRepos(context.Background(), provider, filters, "")
+	_, err := ListRepos(t.Context(), provider, filters, "")
 	require.Error(t, err)
 }
 
 func TestFilterBranchMatch(t *testing.T) {
+	t.Parallel()
 	provider := &MockProvider{
 		Repos: []*Repository{
 			{
@@ -183,10 +185,10 @@ func TestFilterBranchMatch(t *testing.T) {
 	}
 	filters := []argoprojiov1alpha1.SCMProviderGeneratorFilter{
 		{
-			BranchMatch: strp("w"),
+			BranchMatch: new("w"),
 		},
 	}
-	repos, err := ListRepos(context.Background(), provider, filters, "")
+	repos, err := ListRepos(t.Context(), provider, filters, "")
 	require.NoError(t, err)
 	assert.Len(t, repos, 2)
 	assert.Equal(t, "one", repos[0].Repository)
@@ -196,6 +198,7 @@ func TestFilterBranchMatch(t *testing.T) {
 }
 
 func TestMultiFilterAnd(t *testing.T) {
+	t.Parallel()
 	provider := &MockProvider{
 		Repos: []*Repository{
 			{
@@ -214,17 +217,18 @@ func TestMultiFilterAnd(t *testing.T) {
 	}
 	filters := []argoprojiov1alpha1.SCMProviderGeneratorFilter{
 		{
-			RepositoryMatch: strp("w"),
-			LabelMatch:      strp("^prod-.*$"),
+			RepositoryMatch: new("w"),
+			LabelMatch:      new("^prod-.*$"),
 		},
 	}
-	repos, err := ListRepos(context.Background(), provider, filters, "")
+	repos, err := ListRepos(t.Context(), provider, filters, "")
 	require.NoError(t, err)
 	assert.Len(t, repos, 1)
 	assert.Equal(t, "two", repos[0].Repository)
 }
 
 func TestMultiFilterOr(t *testing.T) {
+	t.Parallel()
 	provider := &MockProvider{
 		Repos: []*Repository{
 			{
@@ -243,13 +247,13 @@ func TestMultiFilterOr(t *testing.T) {
 	}
 	filters := []argoprojiov1alpha1.SCMProviderGeneratorFilter{
 		{
-			RepositoryMatch: strp("e"),
+			RepositoryMatch: new("e"),
 		},
 		{
-			LabelMatch: strp("^prod-.*$"),
+			LabelMatch: new("^prod-.*$"),
 		},
 	}
-	repos, err := ListRepos(context.Background(), provider, filters, "")
+	repos, err := ListRepos(t.Context(), provider, filters, "")
 	require.NoError(t, err)
 	assert.Len(t, repos, 3)
 	assert.Equal(t, "one", repos[0].Repository)
@@ -258,6 +262,7 @@ func TestMultiFilterOr(t *testing.T) {
 }
 
 func TestNoFilters(t *testing.T) {
+	t.Parallel()
 	provider := &MockProvider{
 		Repos: []*Repository{
 			{
@@ -275,7 +280,7 @@ func TestNoFilters(t *testing.T) {
 		},
 	}
 	filters := []argoprojiov1alpha1.SCMProviderGeneratorFilter{}
-	repos, err := ListRepos(context.Background(), provider, filters, "")
+	repos, err := ListRepos(t.Context(), provider, filters, "")
 	require.NoError(t, err)
 	assert.Len(t, repos, 3)
 	assert.Equal(t, "one", repos[0].Repository)
@@ -286,6 +291,7 @@ func TestNoFilters(t *testing.T) {
 // tests the getApplicableFilters function, passing in all the filters, and an unset filter, plus an additional
 // branch filter
 func TestApplicableFilterMap(t *testing.T) {
+	t.Parallel()
 	branchFilter := Filter{
 		BranchMatch: &regexp.Regexp{},
 		FilterType:  FilterTypeBranch,

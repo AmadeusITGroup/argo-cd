@@ -2,7 +2,7 @@ package cmp_test
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,10 +12,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	pluginclient "github.com/argoproj/argo-cd/v2/cmpserver/apiclient"
-	"github.com/argoproj/argo-cd/v2/test"
-	"github.com/argoproj/argo-cd/v2/util/cmp"
-	"github.com/argoproj/argo-cd/v2/util/io/files"
+	pluginclient "github.com/argoproj/argo-cd/v3/cmpserver/apiclient"
+	"github.com/argoproj/argo-cd/v3/test"
+	"github.com/argoproj/argo-cd/v3/util/cmp"
+	"github.com/argoproj/argo-cd/v3/util/io/files"
 )
 
 type streamMock struct {
@@ -30,7 +30,7 @@ func (m *streamMock) Recv() (*pluginclient.AppStreamRequest, error) {
 	case <-m.done:
 		return nil, io.EOF
 	case <-time.After(500 * time.Millisecond):
-		return nil, fmt.Errorf("timeout receiving message mock")
+		return nil, errors.New("timeout receiving message mock")
 	}
 }
 
@@ -49,8 +49,10 @@ func newStreamMock() *streamMock {
 }
 
 func TestReceiveApplicationStream(t *testing.T) {
+	t.Parallel()
 	t.Run("will receive the application stream successfully", func(t *testing.T) {
 		// given
+		t.Parallel()
 		streamMock := newStreamMock()
 		appDir := filepath.Join(getTestDataDir(t), "app")
 		workdir, err := files.CreateTempDir("")
@@ -59,10 +61,10 @@ func TestReceiveApplicationStream(t *testing.T) {
 			close(streamMock.messages)
 			os.RemoveAll(workdir)
 		}()
-		go streamMock.sendFile(context.Background(), t, appDir, streamMock, []string{"env1", "env2"}, []string{"DUMMY.md", "dum*"})
+		go streamMock.sendFile(t.Context(), t, appDir, streamMock, []string{"env1", "env2"}, []string{"DUMMY.md", "dum*"})
 
 		// when
-		env, err := cmp.ReceiveRepoStream(context.Background(), streamMock, workdir, false)
+		env, err := cmp.ReceiveRepoStream(t.Context(), streamMock, workdir, false)
 
 		// then
 		require.NoError(t, err)
@@ -80,6 +82,30 @@ func TestReceiveApplicationStream(t *testing.T) {
 		assert.NotContains(t, names, "dummy")
 		assert.NotNil(t, env)
 	})
+
+	t.Run("slash-pattern in plugin-tar-exclude excludes by relative path", func(t *testing.T) {
+		t.Parallel()
+		streamMock := newStreamMock()
+		appDir := filepath.Join(getTestDataDir(t), "app")
+		workdir, err := files.CreateTempDir("")
+		require.NoError(t, err)
+		defer func() {
+			close(streamMock.messages)
+			if removeErr := os.RemoveAll(workdir); removeErr != nil {
+				t.Fatal(removeErr)
+			}
+		}()
+		go streamMock.sendFile(t.Context(), t, appDir, streamMock, nil, []string{"applicationset/latest/**"})
+
+		_, err = cmp.ReceiveRepoStream(t.Context(), streamMock, workdir, false)
+		require.NoError(t, err)
+		latestDir := filepath.Join(workdir, "applicationset", "latest")
+		stableDir := filepath.Join(workdir, "applicationset", "stable")
+		_, statErr := os.Stat(filepath.Join(latestDir, "kustomization.yaml"))
+		assert.True(t, os.IsNotExist(statErr), "applicationset/latest/kustomization.yaml should be excluded")
+		_, statErr = os.Stat(filepath.Join(stableDir, "kustomization.yaml"))
+		assert.NoError(t, statErr, "applicationset/stable/kustomization.yaml should be present")
+	})
 }
 
 func (m *streamMock) sendFile(ctx context.Context, t *testing.T, basedir string, sender cmp.StreamSender, env []string, excludedGlobs []string) {
@@ -94,5 +120,6 @@ func (m *streamMock) sendFile(ctx context.Context, t *testing.T, basedir string,
 // getTestDataDir will return the full path of the testdata dir
 // under the running test folder.
 func getTestDataDir(t *testing.T) string {
+	t.Helper()
 	return filepath.Join(test.GetTestDir(t), "testdata")
 }

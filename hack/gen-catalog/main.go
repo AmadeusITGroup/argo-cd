@@ -9,19 +9,19 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/spf13/cobra/doc"
-
-	"github.com/argoproj/argo-cd/v2/cmd/argocd/commands/admin"
-
 	"github.com/argoproj/notifications-engine/pkg/services"
 	"github.com/argoproj/notifications-engine/pkg/triggers"
 	"github.com/argoproj/notifications-engine/pkg/util/misc"
 	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/renderer"
+	"github.com/olekukonko/tablewriter/tw"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"github.com/spf13/cobra/doc"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
+
+	"github.com/argoproj/argo-cd/v3/cmd/argocd/commands/admin"
 )
 
 func main() {
@@ -43,16 +43,12 @@ func main() {
 func newCatalogCommand() *cobra.Command {
 	return &cobra.Command{
 		Use: "catalog",
-		Run: func(c *cobra.Command, args []string) {
-			cm := v1.ConfigMap{
-				TypeMeta: metav1.TypeMeta{
-					Kind:       "ConfigMap",
-					APIVersion: "v1",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "argocd-notifications-cm",
-				},
-				Data: make(map[string]string),
+		Run: func(_ *cobra.Command, _ []string) {
+			cm := corev1.ConfigMap{
+				Kind:       "ConfigMap",
+				APIVersion: "v1",
+				Name:       "argocd-notifications-cm",
+				Data:       make(map[string]string),
 			}
 			wd, err := os.Getwd()
 			dieOnError(err, "Failed to get current working directory")
@@ -68,14 +64,14 @@ func newCatalogCommand() *cobra.Command {
 				trigger := triggers[name]
 				t, err := yaml.Marshal(trigger)
 				dieOnError(err, "Failed to marshal trigger")
-				cm.Data[fmt.Sprintf("trigger.%s", name)] = string(t)
+				cm.Data["trigger."+name] = string(t)
 			})
 
 			misc.IterateStringKeyMap(templates, func(name string) {
 				template := templates[name]
 				t, err := yaml.Marshal(template)
 				dieOnError(err, "Failed to marshal template")
-				cm.Data[fmt.Sprintf("template.%s", name)] = string(t)
+				cm.Data["template."+name] = string(t)
 			})
 
 			d, err := yaml.Marshal(cm)
@@ -90,7 +86,7 @@ func newCatalogCommand() *cobra.Command {
 func newDocsCommand() *cobra.Command {
 	return &cobra.Command{
 		Use: "docs",
-		Run: func(c *cobra.Command, args []string) {
+		Run: func(_ *cobra.Command, _ []string) {
 			var builtItDocsData bytes.Buffer
 			wd, err := os.Getwd()
 			dieOnError(err, "Failed to get current working directory")
@@ -126,11 +122,13 @@ func generateBuiltInTriggersDocs(out io.Writer, triggers map[string][]triggers.C
 
 	_, _ = fmt.Fprintln(out, "## Triggers")
 
-	w := tablewriter.NewWriter(out)
-	w.SetHeader([]string{"NAME", "DESCRIPTION", "TEMPLATE"})
-	w.SetBorders(tablewriter.Border{Left: true, Top: false, Right: true, Bottom: false})
-	w.SetCenterSeparator("|")
-	w.SetAutoWrapText(false)
+	r := tw.Rendition{
+		Borders: tw.Border{Left: tw.On, Top: tw.Off, Right: tw.On, Bottom: tw.Off},
+		Symbols: tw.NewSymbolCustom("pipe-center").WithCenter("|").WithMidLeft("|").WithMidRight("|"),
+	}
+	c := tablewriter.NewConfigBuilder().WithRowAutoWrap(tw.WrapNone).Build()
+	table := tablewriter.NewTable(out, tablewriter.WithConfig(c), tablewriter.WithRenderer(renderer.NewBlueprint(r)))
+	table.Header("NAME", "DESCRIPTION", "TEMPLATE")
 	misc.IterateStringKeyMap(triggers, func(name string) {
 		t := triggers[name]
 		desc := ""
@@ -139,9 +137,15 @@ func generateBuiltInTriggersDocs(out io.Writer, triggers map[string][]triggers.C
 			desc = t[0].Description
 			template = strings.Join(t[0].Send, ",")
 		}
-		w.Append([]string{name, desc, fmt.Sprintf("[%s](#%s)", template, template)})
+		err := table.Append([]string{name, desc, fmt.Sprintf("[%s](#%s)", template, template)})
+		if err != nil {
+			panic(err)
+		}
 	})
-	w.Render()
+	err := table.Render()
+	if err != nil {
+		panic(err)
+	}
 
 	_, _ = fmt.Fprintln(out, "")
 	_, _ = fmt.Fprintln(out, "## Templates")
@@ -170,7 +174,7 @@ func generateCommandsDocs(out io.Writer) error {
 					if err := doc.GenMarkdown(c, &cmdDesc); err != nil {
 						return fmt.Errorf("error generating Markdown for command: %v : %w", c, err)
 					}
-					for _, line := range strings.Split(cmdDesc.String(), "\n") {
+					for line := range strings.SplitSeq(cmdDesc.String(), "\n") {
 						if strings.HasPrefix(line, "### SEE ALSO") {
 							break
 						}
@@ -203,7 +207,7 @@ func buildConfigFromFS(templatesDir string, triggersDir string) (map[string]serv
 		if err != nil {
 			return fmt.Errorf("error reading the template file: %s : %w", p, err)
 		}
-		name := strings.Split(path.Base(p), ".")[0]
+		name, _, _ := strings.Cut(path.Base(p), ".")
 		var template services.Notification
 		if err := yaml.Unmarshal(data, &template); err != nil {
 			return fmt.Errorf("error unmarshaling the data from file: %s : %w", p, err)
@@ -227,7 +231,7 @@ func buildConfigFromFS(templatesDir string, triggersDir string) (map[string]serv
 		if err != nil {
 			return fmt.Errorf("error reading the trigger file: %s : %w", p, err)
 		}
-		name := strings.Split(path.Base(p), ".")[0]
+		name, _, _ := strings.Cut(path.Base(p), ".")
 		var trigger []triggers.Condition
 		if err := yaml.Unmarshal(data, &trigger); err != nil {
 			return fmt.Errorf("error unmarshaling the data from file: %s : %w", p, err)

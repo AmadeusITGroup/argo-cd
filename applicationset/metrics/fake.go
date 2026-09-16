@@ -2,11 +2,10 @@ package metrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
-	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // Fake implementation for testing
-func NewFakeAppsetMetrics(client ctrlclient.WithWatch) *ApplicationsetMetrics {
+func NewFakeAppsetMetrics() *ApplicationsetMetrics {
 	reconcileHistogram := prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name: "argocd_appset_reconcile",
@@ -16,7 +15,16 @@ func NewFakeAppsetMetrics(client ctrlclient.WithWatch) *ApplicationsetMetrics {
 		[]string{"name", "namespace"},
 	)
 
+	refreshCounter := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "argocd_appset_app_refresh_total",
+		Help: "Counts application refresh triggered by AppSet for progressive sync",
+	}, []string{"namespace", "name"})
+
 	return &ApplicationsetMetrics{
-		reconcileHistogram: reconcileHistogram,
+		reconcileHistogram:                                reconcileHistogram,
+		progressiveSyncAppStatusGauge:                     prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "argocd_appset_progressive_sync_app_status"}, progressiveSyncStepLabels),
+		progressiveSyncAppSyncCounter:                     prometheus.NewCounterVec(prometheus.CounterOpts{Name: "argocd_appset_progressive_sync_syncs_triggered_total"}, []string{"namespace", "name", "step"}),
+		progressiveSyncTriggerSyncAfterDetectionHistogram: prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "argocd_appset_progressive_sync_detection_to_trigger_seconds"}, []string{"namespace", "name"}),
+		progressiveSyncAppRefreshTriggeredCounter:         refreshCounter,
 	}
 }

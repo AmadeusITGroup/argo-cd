@@ -2,7 +2,7 @@ package normalizers
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,11 +10,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
-	"github.com/argoproj/argo-cd/v2/test"
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v3/test"
 )
 
 func TestNormalizeObjectWithMatchedGroupKind(t *testing.T) {
+	t.Parallel()
 	normalizer, err := NewIgnoreNormalizer([]v1alpha1.ResourceIgnoreDifferences{{
 		Group:        "apps",
 		Kind:         "Deployment",
@@ -40,6 +41,7 @@ func TestNormalizeObjectWithMatchedGroupKind(t *testing.T) {
 }
 
 func TestNormalizeNoMatchedGroupKinds(t *testing.T) {
+	t.Parallel()
 	normalizer, err := NewIgnoreNormalizer([]v1alpha1.ResourceIgnoreDifferences{{
 		Group:        "",
 		Kind:         "Service",
@@ -59,6 +61,7 @@ func TestNormalizeNoMatchedGroupKinds(t *testing.T) {
 }
 
 func TestNormalizeMatchedResourceOverrides(t *testing.T) {
+	t.Parallel()
 	normalizer, err := NewIgnoreNormalizer([]v1alpha1.ResourceIgnoreDifferences{}, map[string]v1alpha1.ResourceOverride{
 		"apps/Deployment": {
 			IgnoreDifferences: v1alpha1.OverrideIgnoreDiff{JSONPointers: []string{"/spec/template/spec/containers"}},
@@ -111,6 +114,7 @@ spec:
             x-kubernetes-preserve-unknown-fields: true`
 
 func TestNormalizeMissingJsonPointer(t *testing.T) {
+	t.Parallel()
 	normalizer, err := NewIgnoreNormalizer([]v1alpha1.ResourceIgnoreDifferences{}, map[string]v1alpha1.ResourceOverride{
 		"apps/Deployment": {
 			IgnoreDifferences: v1alpha1.OverrideIgnoreDiff{JSONPointers: []string{"/garbage"}},
@@ -135,6 +139,7 @@ func TestNormalizeMissingJsonPointer(t *testing.T) {
 }
 
 func TestNormalizeGlobMatch(t *testing.T) {
+	t.Parallel()
 	normalizer, err := NewIgnoreNormalizer([]v1alpha1.ResourceIgnoreDifferences{}, map[string]v1alpha1.ResourceOverride{
 		"*/*": {
 			IgnoreDifferences: v1alpha1.OverrideIgnoreDiff{JSONPointers: []string{"/spec/template/spec/containers"}},
@@ -157,6 +162,7 @@ func TestNormalizeGlobMatch(t *testing.T) {
 }
 
 func TestNormalizeJQPathExpression(t *testing.T) {
+	t.Parallel()
 	normalizer, err := NewIgnoreNormalizer([]v1alpha1.ResourceIgnoreDifferences{{
 		Group:             "apps",
 		Kind:              "Deployment",
@@ -167,9 +173,9 @@ func TestNormalizeJQPathExpression(t *testing.T) {
 
 	deployment := test.NewDeployment()
 
-	var initContainers []interface{}
-	initContainers = append(initContainers, map[string]interface{}{"name": "init-container-0"})
-	initContainers = append(initContainers, map[string]interface{}{"name": "init-container-1"})
+	var initContainers []any
+	initContainers = append(initContainers, map[string]any{"name": "init-container-0"})
+	initContainers = append(initContainers, map[string]any{"name": "init-container-1"})
 	err = unstructured.SetNestedSlice(deployment.Object, initContainers, "spec", "template", "spec", "initContainers")
 	require.NoError(t, err)
 
@@ -185,13 +191,14 @@ func TestNormalizeJQPathExpression(t *testing.T) {
 	assert.True(t, has)
 	assert.Len(t, actualInitContainers, 1)
 
-	actualInitContainerName, has, err := unstructured.NestedString(actualInitContainers[0].(map[string]interface{}), "name")
+	actualInitContainerName, has, err := unstructured.NestedString(actualInitContainers[0].(map[string]any), "name")
 	require.NoError(t, err)
 	assert.True(t, has)
 	assert.Equal(t, "init-container-1", actualInitContainerName)
 }
 
 func TestNormalizeIllegalJQPathExpression(t *testing.T) {
+	t.Parallel()
 	_, err := NewIgnoreNormalizer([]v1alpha1.ResourceIgnoreDifferences{{
 		Group:             "apps",
 		Kind:              "Deployment",
@@ -203,6 +210,7 @@ func TestNormalizeIllegalJQPathExpression(t *testing.T) {
 }
 
 func TestNormalizeJQPathExpressionWithError(t *testing.T) {
+	t.Parallel()
 	normalizer, err := NewIgnoreNormalizer([]v1alpha1.ResourceIgnoreDifferences{{
 		Group:             "apps",
 		Kind:              "Deployment",
@@ -224,6 +232,7 @@ func TestNormalizeJQPathExpressionWithError(t *testing.T) {
 }
 
 func TestNormalizeExpectedErrorAreSilenced(t *testing.T) {
+	t.Parallel()
 	normalizer, err := NewIgnoreNormalizer([]v1alpha1.ResourceIgnoreDifferences{}, map[string]v1alpha1.ResourceOverride{
 		"*/*": {
 			IgnoreDifferences: v1alpha1.OverrideIgnoreDiff{
@@ -250,10 +259,11 @@ func TestNormalizeExpectedErrorAreSilenced(t *testing.T) {
 	_, err = jqPatch.Apply(deploymentData)
 	assert.False(t, shouldLogError(err))
 
-	assert.True(t, shouldLogError(fmt.Errorf("An error that should not be ignored")))
+	assert.True(t, shouldLogError(errors.New("An error that should not be ignored")))
 }
 
 func TestJqPathExpressionFailWithTimeout(t *testing.T) {
+	t.Parallel()
 	normalizer, err := NewIgnoreNormalizer([]v1alpha1.ResourceIgnoreDifferences{}, map[string]v1alpha1.ResourceOverride{
 		"*/*": {
 			IgnoreDifferences: v1alpha1.OverrideIgnoreDiff{
@@ -276,6 +286,7 @@ func TestJqPathExpressionFailWithTimeout(t *testing.T) {
 }
 
 func TestJQPathExpressionReturnsHelpfulError(t *testing.T) {
+	t.Parallel()
 	normalizer, err := NewIgnoreNormalizer([]v1alpha1.ResourceIgnoreDifferences{{
 		Kind: "ConfigMap",
 		// This is a really wild expression, but it does trigger the desired error.
@@ -292,4 +303,27 @@ func TestJQPathExpressionReturnsHelpfulError(t *testing.T) {
 		require.NoError(t, err)
 	})
 	assert.Contains(t, out, "fromjson cannot be applied")
+}
+
+func TestNormalizeFailureLogIncludesResourceContext(t *testing.T) {
+	t.Parallel()
+	// When a normalization patch fails with a non-silenced error, the log entry
+	// must identify which resource was being normalized so operators can act on it.
+	// Regression test for https://github.com/argoproj/argo-cd/issues/14148.
+	normalizer, err := NewIgnoreNormalizer([]v1alpha1.ResourceIgnoreDifferences{{
+		Kind:              "ConfigMap",
+		JQPathExpressions: []string{`.nothing) | .data["config.yaml"] |= (fromjson | del(.auth) | tojson`},
+	}}, nil, IgnoreNormalizerOpts{})
+	require.NoError(t, err)
+
+	configMap := test.NewConfigMap()
+
+	out := test.CaptureLogEntries(func() {
+		err = normalizer.Normalize(configMap)
+		require.NoError(t, err)
+	})
+
+	assert.Contains(t, out, "Failed to apply normalization patch")
+	assert.Contains(t, out, "kind=ConfigMap")
+	assert.Contains(t, out, "name=my-configmap")
 }

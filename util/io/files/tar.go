@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/bmatcuk/doublestar/v4"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -30,12 +32,26 @@ func Tgz(srcPath string, inclusions []string, exclusions []string, writers ...io
 		return 0, fmt.Errorf("error inspecting srcPath %q: %w", srcPath, err)
 	}
 
-	mw := io.MultiWriter(writers...)
-
-	gzw := gzip.NewWriter(mw)
+	gzw := gzip.NewWriter(io.MultiWriter(writers...))
 	defer gzw.Close()
 
-	tw := tar.NewWriter(gzw)
+	return writeFile(srcPath, inclusions, exclusions, gzw)
+}
+
+// Tar will iterate over all files found in srcPath archiving with Tar. Will invoke every given writer while generating the tar.
+// This is useful to generate checksums. Will exclude files matching the exclusions
+// list blob if exclusions is not nil. Will include only the files matching the
+// inclusions list if inclusions is not nil.
+func Tar(srcPath string, inclusions []string, exclusions []string, writers ...io.Writer) (int, error) {
+	if _, err := os.Stat(srcPath); err != nil {
+		return 0, fmt.Errorf("error inspecting srcPath %q: %w", srcPath, err)
+	}
+
+	return writeFile(srcPath, inclusions, exclusions, io.MultiWriter(writers...))
+}
+
+func writeFile(srcPath string, inclusions []string, exclusions []string, writer io.Writer) (int, error) {
+	tw := tar.NewWriter(writer)
 	defer tw.Close()
 
 	t := &tgz{
@@ -56,7 +72,7 @@ func Tgz(srcPath string, inclusions []string, exclusions []string, writers ...io
 // Callers must make sure dstPath is:
 //   - a full path
 //   - points to an empty directory or
-//   - points to a non existing directory
+//   - points to a non-existing directory
 func Untgz(dstPath string, r io.Reader, maxSize int64, preserveFileMode bool) error {
 	if !filepath.IsAbs(dstPath) {
 		return fmt.Errorf("dstPath points to a relative path: %s", dstPath)
@@ -67,9 +83,29 @@ func Untgz(dstPath string, r io.Reader, maxSize int64, preserveFileMode bool) er
 		return fmt.Errorf("error reading file: %w", err)
 	}
 	defer gzr.Close()
+	return untar(dstPath, io.LimitReader(gzr, maxSize), preserveFileMode)
+}
 
-	lr := io.LimitReader(gzr, maxSize)
-	tr := tar.NewReader(lr)
+// Untar will loop over the tar reader creating the file structure at dstPath.
+// Callers must make sure dstPath is:
+//   - a full path
+//   - points to an empty directory or
+//   - points to a non-existing directory
+func Untar(dstPath string, r io.Reader, maxSize int64, preserveFileMode bool) error {
+	if !filepath.IsAbs(dstPath) {
+		return fmt.Errorf("dstPath points to a relative path: %s", dstPath)
+	}
+
+	return untar(dstPath, io.LimitReader(r, maxSize), preserveFileMode)
+}
+
+// untar will loop over the tar reader creating the file structure at dstPath.
+// Callers must make sure dstPath is:
+//   - a full path
+//   - points to an empty directory or
+//   - points to a non existing directory
+func untar(dstPath string, r io.Reader, preserveFileMode bool) error {
+	tr := tar.NewReader(r)
 
 	for {
 		header, err := tr.Next()
@@ -79,7 +115,7 @@ func Untgz(dstPath string, r io.Reader, maxSize int64, preserveFileMode bool) er
 			}
 			return fmt.Errorf("error while iterating on tar reader: %w", err)
 		}
-		if header == nil || header.Name == "." {
+		if header == nil || header.Name == "." || header.Name == "./" {
 			continue
 		}
 
@@ -102,16 +138,25 @@ func Untgz(dstPath string, r io.Reader, maxSize int64, preserveFileMode bool) er
 		case tar.TypeSymlink:
 			// Sanity check to protect against symlink exploit
 			linkTarget := filepath.Join(filepath.Dir(target), header.Linkname)
-			realPath, err := filepath.EvalSymlinks(linkTarget)
+			realLinkTarget, err := filepath.EvalSymlinks(linkTarget)
 			if os.IsNotExist(err) {
-				realPath = linkTarget
+				realLinkTarget = linkTarget
 			} else if err != nil {
 				return fmt.Errorf("error checking symlink realpath: %w", err)
 			}
-			if !Inbound(realPath, dstPath) {
+			if !Inbound(realLinkTarget, dstPath) {
 				return fmt.Errorf("illegal filepath in symlink: %s", linkTarget)
 			}
-			err = os.Symlink(realPath, target)
+
+			// Relativizing all symlink targets because path.CheckOutOfBoundsSymlinks disallows any absolute symlinks
+			// and it makes more sense semantically to view symlinks in archives as relative.
+			// Inbound ensures that we never allow symlinks that break out of the target directory.
+			realLinkTarget, err = filepath.Rel(filepath.Dir(target), realLinkTarget)
+			if err != nil {
+				return fmt.Errorf("error relativizing link target: %w", err)
+			}
+
+			err = os.Symlink(realLinkTarget, target)
 			if err != nil {
 				return fmt.Errorf("error creating symlink: %w", err)
 			}
@@ -141,10 +186,30 @@ func Untgz(dstPath string, r io.Reader, maxSize int64, preserveFileMode bool) er
 	return nil
 }
 
+func matchPath(pattern, relativePath string) (bool, error) {
+	normPattern := filepath.ToSlash(pattern)
+	normPath := filepath.ToSlash(relativePath)
+	return doublestar.Match(normPattern, normPath)
+}
+
+func matchesPattern(pattern, base, relativePath string) (bool, error) {
+	if strings.Contains(filepath.ToSlash(pattern), "/") {
+		return matchPath(pattern, relativePath)
+	}
+	return filepath.Match(pattern, base)
+}
+
 // tgzFile is used as a filepath.WalkFunc implementing the logic to write
 // the given file in the tgz.tarWriter applying the exclusion pattern defined
 // in tgz.exclusions, or the inclusion pattern defined in tgz.inclusions.
 // Only regular files will be added in the tarball.
+//
+// Inclusion pattern matching rules:
+//   - Patterns containing a path separator ('/') are matched against the
+//     file's relative path. The special segment "**" matches zero or more
+//     path segments, so "charts/**" includes every file under charts/.
+//   - Patterns without a path separator are matched against the filename only
+//     via filepath.Match (original behaviour, e.g. "*.yaml").
 func (t *tgz) tgzFile(path string, fi os.FileInfo, err error) error {
 	if err != nil {
 		return fmt.Errorf("error walking in %q: %w", t.srcPath, err)
@@ -156,13 +221,14 @@ func (t *tgz) tgzFile(path string, fi os.FileInfo, err error) error {
 	if err != nil {
 		return fmt.Errorf("relative path error: %w", err)
 	}
+	relativePath = filepath.ToSlash(relativePath)
 
 	if t.inclusions != nil && base != "." && !fi.IsDir() {
 		included := false
 		for _, inclusionPattern := range t.inclusions {
-			found, err := filepath.Match(inclusionPattern, base)
-			if err != nil {
-				return fmt.Errorf("error verifying inclusion pattern %q: %w", inclusionPattern, err)
+			found, matchErr := matchesPattern(inclusionPattern, base, relativePath)
+			if matchErr != nil {
+				return fmt.Errorf("error verifying inclusion pattern %q: %w", inclusionPattern, matchErr)
 			}
 			if found {
 				included = true
@@ -175,9 +241,9 @@ func (t *tgz) tgzFile(path string, fi os.FileInfo, err error) error {
 	}
 	if t.exclusions != nil {
 		for _, exclusionPattern := range t.exclusions {
-			found, err := filepath.Match(exclusionPattern, relativePath)
-			if err != nil {
-				return fmt.Errorf("error verifying exclusion pattern %q: %w", exclusionPattern, err)
+			found, matchErr := matchesExclusionPattern(exclusionPattern, relativePath)
+			if matchErr != nil {
+				return fmt.Errorf("error verifying exclusion pattern %q: %w", exclusionPattern, matchErr)
 			}
 			if found {
 				if fi.IsDir() {
@@ -243,4 +309,12 @@ func supportedFileMode(fi os.FileInfo) bool {
 		return true
 	}
 	return false
+}
+
+func matchesExclusionPattern(pattern, relativePath string) (bool, error) {
+	normPattern := filepath.ToSlash(pattern)
+	if strings.Contains(normPattern, "/") {
+		return matchPath(normPattern, relativePath)
+	}
+	return filepath.Match(normPattern, relativePath)
 }

@@ -6,41 +6,47 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/google/go-github/v63/github"
-	"golang.org/x/oauth2"
+	"github.com/google/go-github/v69/github"
+
+	appsetutils "github.com/argoproj/argo-cd/v3/applicationset/utils"
 )
 
 type GithubProvider struct {
-	client       *github.Client
-	organization string
-	allBranches  bool
+	client               *github.Client
+	organization         string
+	allBranches          bool
+	excludeArchivedRepos bool
 }
 
 var _ SCMProviderService = &GithubProvider{}
 
-func NewGithubProvider(ctx context.Context, organization string, token string, url string, allBranches bool) (*GithubProvider, error) {
-	var ts oauth2.TokenSource
+func NewGithubProvider(organization string, token string, url string, allBranches bool, excludeArchivedRepos bool, optionalHTTPClient ...*http.Client) (*GithubProvider, error) {
 	// Undocumented environment variable to set a default token, to be used in testing to dodge anonymous rate limits.
 	if token == "" {
 		token = os.Getenv("GITHUB_TOKEN")
 	}
-	if token != "" {
-		ts = oauth2.StaticTokenSource(
-			&oauth2.Token{AccessToken: token},
-		)
-	}
-	httpClient := oauth2.NewClient(ctx, ts)
+
 	var client *github.Client
+	httpClient := appsetutils.GetOptionalHTTPClient(optionalHTTPClient...)
+
 	if url == "" {
-		client = github.NewClient(httpClient)
+		if token == "" {
+			client = github.NewClient(httpClient)
+		} else {
+			client = github.NewClient(httpClient).WithAuthToken(token)
+		}
 	} else {
 		var err error
-		client, err = github.NewClient(httpClient).WithEnterpriseURLs(url, url)
+		if token == "" {
+			client, err = github.NewClient(httpClient).WithEnterpriseURLs(url, url)
+		} else {
+			client, err = github.NewClient(httpClient).WithAuthToken(token).WithEnterpriseURLs(url, url)
+		}
 		if err != nil {
 			return nil, err
 		}
 	}
-	return &GithubProvider{client: client, organization: organization, allBranches: allBranches}, nil
+	return &GithubProvider{client: client, organization: organization, allBranches: allBranches, excludeArchivedRepos: excludeArchivedRepos}, nil
 }
 
 func (g *GithubProvider) GetBranches(ctx context.Context, repo *Repository) ([]*Repository, error) {
@@ -66,7 +72,7 @@ func (g *GithubProvider) GetBranches(ctx context.Context, repo *Repository) ([]*
 
 func (g *GithubProvider) ListRepos(ctx context.Context, cloneProtocol string) ([]*Repository, error) {
 	opt := &github.RepositoryListByOrgOptions{
-		ListOptions: github.ListOptions{PerPage: 100},
+		PerPage: 100,
 	}
 	repos := []*Repository{}
 	for {
@@ -85,6 +91,11 @@ func (g *GithubProvider) ListRepos(ctx context.Context, cloneProtocol string) ([
 			default:
 				return nil, fmt.Errorf("unknown clone protocol for GitHub %v", cloneProtocol)
 			}
+
+			if g.excludeArchivedRepos && githubRepo.GetArchived() {
+				continue
+			}
+
 			repos = append(repos, &Repository{
 				Organization: githubRepo.Owner.GetLogin(),
 				Repository:   githubRepo.GetName(),
@@ -107,7 +118,7 @@ func (g *GithubProvider) RepoHasPath(ctx context.Context, repo *Repository, path
 		Ref: repo.Branch,
 	})
 	// 404s are not an error here, just a normal false.
-	if resp != nil && resp.StatusCode == 404 {
+	if resp != nil && resp.StatusCode == http.StatusNotFound {
 		return false, nil
 	}
 	if err != nil {
@@ -131,7 +142,7 @@ func (g *GithubProvider) listBranches(ctx context.Context, repo *Repository) ([]
 	}
 	// Otherwise, scrape the ListBranches API.
 	opt := &github.BranchListOptions{
-		ListOptions: github.ListOptions{PerPage: 100},
+		PerPage: 100,
 	}
 	branches := []github.Branch{}
 	for {

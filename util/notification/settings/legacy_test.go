@@ -9,11 +9,12 @@ import (
 	"github.com/argoproj/notifications-engine/pkg/triggers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
 func TestMergeLegacyConfig_DefaultTriggers(t *testing.T) {
+	t.Parallel()
 	cfg := api.Config{
 		Services: map[string]api.ServiceFactory{},
 		Triggers: map[string][]triggers.Condition{
@@ -36,14 +37,15 @@ triggers:
 `
 	err := ApplyLegacyConfig(&cfg,
 		context,
-		&v1.ConfigMap{Data: map[string]string{"config.yaml": configYAML}},
-		&v1.Secret{Data: map[string][]byte{}},
+		&corev1.ConfigMap{Data: map[string]string{"config.yaml": configYAML}},
+		&corev1.Secret{Data: map[string][]byte{}},
 	)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-trigger1"}, cfg.DefaultTriggers)
 }
 
 func TestMergeLegacyConfig(t *testing.T) {
+	t.Parallel()
 	cfg := api.Config{
 		Templates: map[string]services.Notification{"my-template1": {Message: "foo"}},
 		Triggers: map[string][]triggers.Condition{
@@ -82,8 +84,8 @@ slack:
   token: my-token
 `
 	err := ApplyLegacyConfig(&cfg, context,
-		&v1.ConfigMap{Data: map[string]string{"config.yaml": configYAML}},
-		&v1.Secret{Data: map[string][]byte{"notifiers.yaml": []byte(notifiersYAML)}},
+		&corev1.ConfigMap{Data: map[string]string{"config.yaml": configYAML}},
+		&corev1.Secret{Data: map[string][]byte{"notifiers.yaml": []byte(notifiersYAML)}},
 	)
 
 	require.NoError(t, err)
@@ -110,6 +112,7 @@ slack:
 }
 
 func TestGetDestinations(t *testing.T) {
+	t.Parallel()
 	res := GetLegacyDestinations(map[string]string{
 		"my-trigger.recipients.argocd-notifications.argoproj.io": "slack:my-channel",
 	}, []string{}, nil)
@@ -124,6 +127,7 @@ func TestGetDestinations(t *testing.T) {
 }
 
 func TestGetDestinations_DefaultTrigger(t *testing.T) {
+	t.Parallel()
 	res := GetLegacyDestinations(map[string]string{
 		annotationKey: "slack:my-channel",
 	}, []string{"my-trigger"}, nil)
@@ -136,6 +140,7 @@ func TestGetDestinations_DefaultTrigger(t *testing.T) {
 }
 
 func TestGetDestinations_ServiceDefaultTriggers(t *testing.T) {
+	t.Parallel()
 	res := GetLegacyDestinations(map[string]string{
 		annotationKey: "slack:my-channel",
 	}, []string{}, map[string][]string{

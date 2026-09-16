@@ -4,20 +4,20 @@ import (
 	"context"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/argoproj/gitops-engine/pkg/utils/testing"
+	"github.com/argoproj/argo-cd/gitops-engine/v3/pkg/utils/testing"
 	"github.com/redis/go-redis/v9"
-	apiv1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	"github.com/argoproj/argo-cd/v2/common"
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
-	apps "github.com/argoproj/argo-cd/v2/pkg/client/clientset/versioned/fake"
-	appclient "github.com/argoproj/argo-cd/v2/pkg/client/clientset/versioned/typed/application/v1alpha1"
-	appinformer "github.com/argoproj/argo-cd/v2/pkg/client/informers/externalversions"
-	applister "github.com/argoproj/argo-cd/v2/pkg/client/listers/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v3/common"
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	apps "github.com/argoproj/argo-cd/v3/pkg/client/clientset/versioned/fake"
+	appclient "github.com/argoproj/argo-cd/v3/pkg/client/clientset/versioned/typed/application/v1alpha1"
+	appinformer "github.com/argoproj/argo-cd/v3/pkg/client/informers/externalversions"
+	applister "github.com/argoproj/argo-cd/v3/pkg/client/listers/application/v1alpha1"
 )
 
 const (
@@ -101,33 +101,28 @@ func NewConfigMap() *unstructured.Unstructured {
 	return testing.Unstructured(ConfigMapManifest)
 }
 
-func NewFakeConfigMap() *apiv1.ConfigMap {
-	cm := apiv1.ConfigMap{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "ConfigMap",
-			APIVersion: "v1",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      common.ArgoCDConfigMapName,
-			Namespace: FakeArgoCDNamespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/part-of": "argocd",
-			},
+func NewFakeConfigMap() *corev1.ConfigMap {
+	cm := corev1.ConfigMap{
+		Kind:       "ConfigMap",
+		APIVersion: "v1",
+		Name:       common.ArgoCDConfigMapName,
+		Namespace:  FakeArgoCDNamespace,
+		Labels: map[string]string{
+			"app.kubernetes.io/part-of": "argocd",
 		},
 		Data: make(map[string]string),
 	}
 	return &cm
 }
 
-func NewFakeSecret(policy ...string) *apiv1.Secret {
-	secret := apiv1.Secret{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "Secret",
-			APIVersion: "v1",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      common.ArgoCDSecretName,
-			Namespace: FakeArgoCDNamespace,
+func NewFakeSecret() *corev1.Secret {
+	secret := corev1.Secret{
+		Kind:       "Secret",
+		APIVersion: "v1",
+		Name:       common.ArgoCDSecretName,
+		Namespace:  FakeArgoCDNamespace,
+		Labels: map[string]string{
+			"app.kubernetes.io/part-of": "argocd",
 		},
 		Data: map[string][]byte{
 			"admin.password":   []byte("test"),
@@ -163,7 +158,7 @@ func NewFakeProjListerFromInterface(appProjects appclient.AppProjectInterface) a
 
 func NewFakeProjLister(objects ...runtime.Object) applister.AppProjectNamespaceLister {
 	fakeAppClientset := apps.NewSimpleClientset(objects...)
-	factory := appinformer.NewSharedInformerFactoryWithOptions(fakeAppClientset, 0, appinformer.WithNamespace(""), appinformer.WithTweakListOptions(func(options *metav1.ListOptions) {}))
+	factory := appinformer.NewSharedInformerFactoryWithOptions(fakeAppClientset, 0, appinformer.WithNamespace(""), appinformer.WithTweakListOptions(func(_ *metav1.ListOptions) {}))
 	projInformer := factory.Argoproj().V1alpha1().AppProjects().Informer()
 	cancel := StartInformer(projInformer)
 	defer cancel()

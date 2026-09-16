@@ -1,16 +1,21 @@
 package tls
 
 import (
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
+	"path"
 	"strings"
 	"testing"
 	"time"
 
+	logtest "github.com/sirupsen/logrus/hooks/test"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -79,19 +84,22 @@ vEsXCS+0yx5DaMkHJ8HSXPfqIbloEpw8nL+e/IBcm2PN7EeqJSdnoDfzAIJ9VNep
 -----END CERTIFICATE-----`
 
 var privateKey = `-----BEGIN RSA PRIVATE KEY-----
-MIIBsAIBAAKBgQCgF35rHhOWi9+r4n9xM/ejvMEsQ8h6lams962k4U0WSdfySUev
-hyI1bd3FRIb5fFqSBt6qPTiiiIw0KXte5dANB6lPe6HdUPTA/U4xHWi2FB/BfAyP
-sOlUBfFp6dtkEEcEKt+Z8KTJYJEerRie24y+nsfZMnLBst6tsEBfx/U75wIBAwKB
-gGq6VEdpYmRdHGzsbmP7vDiYe2zYHLwQ0AKnPKNErq6KQyQC5eEngbgT4WpWl+J2
-Xn+R9m0vwNbaiDam0uD3p5192BaN2tdaW5P5JjfGa95ytRBCQ/cr+z03FjG9C6zQ
-QZG5eyOoMloHAfnYiJMV5SZarfTiF9BGFvtcfrjhbterAgkDBMoUFjHxL0ECeDUI
-f9nbOl1O2AgI/51gfHGo/NKv+kcQenM8RO7dy9+hUAulwqMlyszSq+0GdZdgQL/i
-Lz8NclSgyuUtptmaSWtjB5Tdc8boaBApGKac7vB4M1AfTkng1+SplKbkdFlCVg4n
-6EvCOrUFFsLp308JSbkv2240Q93JJwIJAgMxYrl2oMorAgcDNY7r7ttvAggOb9tA
-6WMDHQ==
+MIICXQIBAAKBgQCJ35XKYxJtCy9on9TYqOZB2tvpcW5VCU7Y+cn8Ls7xtuYcA4ye
+1FAWqCd71k15QTcGinCelTI/Oyy8jxpwJmAbrEU5xQfcpY8N2G1jdhZ4zA0vUrIa
+ofCVQrk0DK1RxaijCrQeO+y+jhhsZkSX8SnzTJB/opdzIrZcFiXogMhVyQIDAQAB
+AoGAWCUck86xGgvbnG0K3BVnWFT+4YlGe5E+2pMf4l1eqsQ+60wNnAGqzkFlNNP2
+pf3emwzpIUnLXQeM+2QWB/tQ149oZg8ZeOU7024WWhwP0lEjmcP36KtnKa6z/Y6L
+YkItQifsQ8mOD06yQea/IeuIlcrvvDjYGTYOWAfHoMekeYECQQDKxWy1/ML8CMrO
+iRH6ijBEEhlSbbF22DuGOA52iccvrITwBwSjd2MXEKWxk9q0VMjPTmiyTasx9aZr
+2UgjF3YZAkEArhDqRf4qYXpUy2zeMRlRCVQbtEk++KPs3tNyLWP6VtXl35cveF64
+iG2R8lCgPF8Qq/DgHFUuiydIWgkF0dnzMQJAOajiPO3fVGP7p7d6kU/yYajz4mim
+6jCa3JPcKQEMzxWzx713KDSuzMRDGbf9nQHvCGQ3iVxkrhQ4erqStMfbIQJBAJ7O
+r+7LxL7KbTJrUQxanKR2KBCEAv+2DxX8s97VqEAxRliIBrc7NADEdrMs/AQYd41n
+ZhBzZtNuM4RxVu3uewECQQDEJoPoXFXGyEAySPY8NJYPUHrY4tmue2L3CB+sdcgI
+NPQCy08ABN5ro6GjeZimdvtHnXeiLYVKGtKsmTq4iTQG
 -----END RSA PRIVATE KEY-----`
 
-func decodePem(certInput string) tls.Certificate {
+func decodePem(certInput string) (*tls.Certificate, error) {
 	var cert tls.Certificate
 	certPEMBlock := []byte(certInput)
 	var certDERBlock *pem.Block
@@ -108,21 +116,27 @@ func decodePem(certInput string) tls.Certificate {
 	var keyDERBlock *pem.Block
 	keyPEMBlock := []byte(privateKey)
 	keyDERBlock, _ = pem.Decode(keyPEMBlock)
-	cert.PrivateKey, _ = x509.ParsePKCS1PrivateKey(keyDERBlock.Bytes)
-	return cert
+	privateKey, err := x509.ParsePKCS1PrivateKey(keyDERBlock.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	cert.PrivateKey = privateKey
+	return &cert, nil
 }
 
 func TestEncodeX509KeyPairString(t *testing.T) {
-	certChain := decodePem(chain)
-	cert, _ := EncodeX509KeyPairString(certChain)
+	t.Parallel()
+	certChain, err := decodePem(chain)
+	require.NoError(t, err)
+	cert, _ := EncodeX509KeyPairString(*certChain)
 
-	if strings.TrimSpace(chain) != strings.TrimSpace(cert) {
-		t.Errorf("Incorrect, got: %s, want: %s", cert, chain)
-	}
+	assert.Equal(t, strings.TrimSpace(chain), strings.TrimSpace(cert))
 }
 
 func TestGetTLSVersionByString(t *testing.T) {
+	t.Parallel()
 	t.Run("Valid versions", func(t *testing.T) {
+		t.Parallel()
 		for k, v := range tlsVersionByString {
 			r, err := getTLSVersionByString(k)
 			require.NoError(t, err)
@@ -131,11 +145,13 @@ func TestGetTLSVersionByString(t *testing.T) {
 	})
 
 	t.Run("Invalid versions", func(t *testing.T) {
+		t.Parallel()
 		_, err := getTLSVersionByString("1.4")
 		require.Error(t, err)
 	})
 
 	t.Run("Empty versions", func(t *testing.T) {
+		t.Parallel()
 		r, err := getTLSVersionByString("")
 		require.NoError(t, err)
 		assert.Equal(t, uint16(0), r)
@@ -145,7 +161,7 @@ func TestGetTLSVersionByString(t *testing.T) {
 func TestGetTLSCipherSuitesByString(t *testing.T) {
 	suites := make([]string, 0)
 	for _, s := range tls.CipherSuites() {
-		t.Run(fmt.Sprintf("Test for valid suite %s", s.Name), func(t *testing.T) {
+		t.Run("Test for valid suite "+s.Name, func(t *testing.T) {
 			ids, err := getTLSCipherSuitesByString(s.Name)
 			require.NoError(t, err)
 			assert.Len(t, ids, 1)
@@ -168,7 +184,9 @@ func TestGetTLSCipherSuitesByString(t *testing.T) {
 }
 
 func TestTLSVersionToString(t *testing.T) {
+	t.Parallel()
 	t.Run("Test known versions", func(t *testing.T) {
+		t.Parallel()
 		versions := make([]uint16, 0)
 		for _, v := range tlsVersionByString {
 			versions = append(versions, v)
@@ -177,6 +195,7 @@ func TestTLSVersionToString(t *testing.T) {
 		assert.Len(t, s, len(versions))
 	})
 	t.Run("Test unknown version", func(t *testing.T) {
+		t.Parallel()
 		s := tlsVersionsToStr([]uint16{999})
 		assert.Len(t, s, 1)
 		assert.Equal(t, "unknown", s[0])
@@ -184,29 +203,31 @@ func TestTLSVersionToString(t *testing.T) {
 }
 
 func TestGenerate(t *testing.T) {
+	t.Parallel()
 	t.Run("Invalid: No hosts specified", func(t *testing.T) {
+		t.Parallel()
 		opts := CertOptions{Hosts: []string{}, Organization: "Acme", ValidFrom: time.Now(), ValidFor: 10 * time.Hour}
 		_, _, err := generate(opts)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "hosts not supplied")
+		assert.ErrorContains(t, err, "hosts not supplied")
 	})
 
 	t.Run("Invalid: No organization specified", func(t *testing.T) {
+		t.Parallel()
 		opts := CertOptions{Hosts: []string{"localhost"}, Organization: "", ValidFrom: time.Now(), ValidFor: 10 * time.Hour}
 		_, _, err := generate(opts)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "organization not supplied")
+		assert.ErrorContains(t, err, "organization not supplied")
 	})
 
 	t.Run("Invalid: Unsupported curve specified", func(t *testing.T) {
+		t.Parallel()
 		opts := CertOptions{Hosts: []string{"localhost"}, Organization: "Acme", ECDSACurve: "Curve?", ValidFrom: time.Now(), ValidFor: 10 * time.Hour}
 		_, _, err := generate(opts)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "Unrecognized elliptic curve")
+		assert.ErrorContains(t, err, "unrecognized elliptic curve")
 	})
 
 	for _, curve := range []string{"P224", "P256", "P384", "P521"} {
-		t.Run(fmt.Sprintf("Create certificate with curve %s", curve), func(t *testing.T) {
+		t.Run("Create certificate with curve "+curve, func(t *testing.T) {
+			t.Parallel()
 			opts := CertOptions{Hosts: []string{"localhost"}, Organization: "Acme", ECDSACurve: curve}
 			_, _, err := generate(opts)
 			require.NoError(t, err)
@@ -214,6 +235,7 @@ func TestGenerate(t *testing.T) {
 	}
 
 	t.Run("Create certificate with default options", func(t *testing.T) {
+		t.Parallel()
 		opts := CertOptions{Hosts: []string{"localhost"}, Organization: "Acme"}
 		certBytes, privKey, err := generate(opts)
 		require.NoError(t, err)
@@ -228,6 +250,7 @@ func TestGenerate(t *testing.T) {
 	})
 
 	t.Run("Create certificate with IP ", func(t *testing.T) {
+		t.Parallel()
 		opts := CertOptions{Hosts: []string{"localhost", "127.0.0.1"}, Organization: "Acme"}
 		certBytes, privKey, err := generate(opts)
 		require.NoError(t, err)
@@ -243,6 +266,7 @@ func TestGenerate(t *testing.T) {
 	})
 
 	t.Run("Create certificate with specific validity timeframe", func(t *testing.T) {
+		t.Parallel()
 		opts := CertOptions{Hosts: []string{"localhost"}, Organization: "Acme", ValidFrom: time.Now().Add(1 * time.Hour)}
 		certBytes, privKey, err := generate(opts)
 		require.NoError(t, err)
@@ -250,11 +274,12 @@ func TestGenerate(t *testing.T) {
 		cert, err := x509.ParseCertificate(certBytes)
 		require.NoError(t, err)
 		assert.NotNil(t, cert)
-		assert.GreaterOrEqual(t, (time.Now().Unix())+int64(1*time.Hour), cert.NotBefore.Unix())
+		assert.GreaterOrEqual(t, time.Now().Unix()+int64(1*time.Hour), cert.NotBefore.Unix())
 	})
 
 	for _, year := range []int{1, 2, 3, 10} {
 		t.Run(fmt.Sprintf("Create certificate with specified ValidFor %d year", year), func(t *testing.T) {
+			t.Parallel()
 			validFrom, validFor := time.Now(), 365*24*time.Hour*time.Duration(year)
 			opts := CertOptions{Hosts: []string{"localhost"}, Organization: "Acme", ValidFrom: validFrom, ValidFor: validFor}
 			certBytes, privKey, err := generate(opts)
@@ -270,7 +295,9 @@ func TestGenerate(t *testing.T) {
 }
 
 func TestGeneratePEM(t *testing.T) {
+	t.Parallel()
 	t.Run("Invalid - PEM creation failure", func(t *testing.T) {
+		t.Parallel()
 		opts := CertOptions{Hosts: nil, Organization: "Acme"}
 		cert, key, err := generatePEM(opts)
 		require.Error(t, err)
@@ -279,6 +306,7 @@ func TestGeneratePEM(t *testing.T) {
 	})
 
 	t.Run("Create PEM from certficate options", func(t *testing.T) {
+		t.Parallel()
 		opts := CertOptions{Hosts: []string{"localhost"}, Organization: "Acme"}
 		cert, key, err := generatePEM(opts)
 		require.NoError(t, err)
@@ -287,6 +315,7 @@ func TestGeneratePEM(t *testing.T) {
 	})
 
 	t.Run("Create X509KeyPair", func(t *testing.T) {
+		t.Parallel()
 		opts := CertOptions{Hosts: []string{"localhost"}, Organization: "Acme"}
 		cert, err := GenerateX509KeyPair(opts)
 		require.NoError(t, err)
@@ -295,18 +324,22 @@ func TestGeneratePEM(t *testing.T) {
 }
 
 func TestGetTLSConfigCustomizer(t *testing.T) {
+	t.Parallel()
 	t.Run("Valid TLS customization", func(t *testing.T) {
-		cfunc, err := getTLSConfigCustomizer(DefaultTLSMinVersion, DefaultTLSMaxVersion, DefaultTLSCipherSuite)
+		t.Parallel()
+		cfunc, err := getTLSConfigCustomizer(DefaultTLSMinVersion, DefaultTLSMaxVersion, DefaultTLSCipherSuite, DefaultTLSCurvePreferences)
 		require.NoError(t, err)
 		assert.NotNil(t, cfunc)
 		config := tls.Config{}
 		cfunc(&config)
 		assert.Equal(t, config.MinVersion, uint16(tls.VersionTLS12))
 		assert.Equal(t, config.MaxVersion, uint16(tls.VersionTLS13))
+		assert.Equal(t, config.CurvePreferences, []tls.CurveID([]tls.CurveID(nil)))
 	})
 
-	t.Run("Valid TLS customization - No cipher customization for TLSv1.3 only with default ciphers", func(t *testing.T) {
-		cfunc, err := getTLSConfigCustomizer("1.3", "1.3", DefaultTLSCipherSuite)
+	t.Run("Valid TLS customization - No cipher customization for TLSv1.3 only with default ciphers and single curve preference", func(t *testing.T) {
+		t.Parallel()
+		cfunc, err := getTLSConfigCustomizer("1.3", "1.3", DefaultTLSCipherSuite, "X25519")
 		require.NoError(t, err)
 		assert.NotNil(t, cfunc)
 		config := tls.Config{}
@@ -314,10 +347,12 @@ func TestGetTLSConfigCustomizer(t *testing.T) {
 		assert.Equal(t, config.MinVersion, uint16(tls.VersionTLS13))
 		assert.Equal(t, config.MaxVersion, uint16(tls.VersionTLS13))
 		assert.Empty(t, config.CipherSuites)
+		assert.Equal(t, []tls.CurveID{tls.X25519}, config.CurvePreferences)
 	})
 
-	t.Run("Valid TLS customization - No cipher customization for TLSv1.3 only with custom ciphers", func(t *testing.T) {
-		cfunc, err := getTLSConfigCustomizer("1.3", "1.3", "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256")
+	t.Run("Valid TLS customization - No cipher customization for TLSv1.3 only with custom ciphers and two curve preferences", func(t *testing.T) {
+		t.Parallel()
+		cfunc, err := getTLSConfigCustomizer("1.3", "1.3", "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "X25519:X25519MLKEM768")
 		require.NoError(t, err)
 		assert.NotNil(t, cfunc)
 		config := tls.Config{}
@@ -325,41 +360,56 @@ func TestGetTLSConfigCustomizer(t *testing.T) {
 		assert.Equal(t, config.MinVersion, uint16(tls.VersionTLS13))
 		assert.Equal(t, config.MaxVersion, uint16(tls.VersionTLS13))
 		assert.Empty(t, config.CipherSuites)
+		assert.Equal(t, []tls.CurveID{tls.X25519, tls.X25519MLKEM768}, config.CurvePreferences)
 	})
 
 	t.Run("Invalid TLS customization - Min version higher than max version", func(t *testing.T) {
-		cfunc, err := getTLSConfigCustomizer("1.3", "1.2", DefaultTLSCipherSuite)
+		t.Parallel()
+		cfunc, err := getTLSConfigCustomizer("1.3", "1.2", DefaultTLSCipherSuite, DefaultTLSCurvePreferences)
 		require.Error(t, err)
 		assert.Nil(t, cfunc)
 	})
 
 	t.Run("Invalid TLS customization - Invalid min version given", func(t *testing.T) {
-		cfunc, err := getTLSConfigCustomizer("2.0", "1.2", DefaultTLSCipherSuite)
+		t.Parallel()
+		cfunc, err := getTLSConfigCustomizer("2.0", "1.2", DefaultTLSCipherSuite, DefaultTLSCurvePreferences)
 		require.Error(t, err)
 		assert.Nil(t, cfunc)
 	})
 
 	t.Run("Invalid TLS customization - Invalid max version given", func(t *testing.T) {
-		cfunc, err := getTLSConfigCustomizer("1.2", "2.0", DefaultTLSCipherSuite)
+		t.Parallel()
+		cfunc, err := getTLSConfigCustomizer("1.2", "2.0", DefaultTLSCipherSuite, DefaultTLSCurvePreferences)
 		require.Error(t, err)
 		assert.Nil(t, cfunc)
 	})
 
 	t.Run("Invalid TLS customization - Unknown cipher suite given", func(t *testing.T) {
-		cfunc, err := getTLSConfigCustomizer("1.3", "1.2", "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:invalid")
+		t.Parallel()
+		cfunc, err := getTLSConfigCustomizer("1.3", "1.2", "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:invalid", DefaultTLSCurvePreferences)
+		require.Error(t, err)
+		assert.Nil(t, cfunc)
+	})
+
+	t.Run("Invalid curve preferences", func(t *testing.T) {
+		t.Parallel()
+		cfunc, err := getTLSConfigCustomizer("1.3", "1.2", DefaultTLSCipherSuite, "invalid_curve")
 		require.Error(t, err)
 		assert.Nil(t, cfunc)
 	})
 }
 
 func TestBestEffortSystemCertPool(t *testing.T) {
+	t.Parallel()
 	pool := BestEffortSystemCertPool()
 	assert.NotNil(t, pool)
 }
 
 func TestCreateServerTLSConfig(t *testing.T) {
+	t.Parallel()
 	t.Run("Configuration from a valid key/cert pair", func(t *testing.T) {
-		tlsc, err := CreateServerTLSConfig("testdata/valid_tls.crt", "testdata/valid_tls.key", []string{"localhost", "argocd-repo-server"})
+		t.Parallel()
+		tlsc, err := CreateServerTLSConfig("testdata/valid_tls.crt", "testdata/valid_tls.key", []string{"localhost", "argocd-repo-server"}, "")
 		require.NoError(t, err)
 		assert.Len(t, tlsc.Certificates, 1)
 		c, err := x509.ParseCertificate(tlsc.Certificates[0].Certificate[0])
@@ -368,24 +418,67 @@ func TestCreateServerTLSConfig(t *testing.T) {
 	})
 
 	t.Run("Self-signed creation due to non-existing cert", func(t *testing.T) {
-		tlsc, err := CreateServerTLSConfig("testdata/invvalid_tls.crt", "testdata/invalid_tls.key", []string{"localhost", "argocd-repo-server"})
+		t.Parallel()
+		tlsc, err := CreateServerTLSConfig("testdata/invvalid_tls.crt", "testdata/invalid_tls.key", []string{"localhost", "argocd-repo-server"}, "")
 		require.NoError(t, err)
 		assert.Len(t, tlsc.Certificates, 1)
 		c, err := x509.ParseCertificate(tlsc.Certificates[0].Certificate[0])
 		require.NoError(t, err)
 		assert.Equal(t, []string{"Argo CD"}, c.Subject.Organization)
+		assert.Equal(t, tls.NoClientCert, tlsc.ClientAuth)
 	})
 
 	t.Run("Self-signed creation fails due to hosts being nil", func(t *testing.T) {
-		tlsc, err := CreateServerTLSConfig("testdata/invvalid_tls.crt", "testdata/invalid_tls.key", nil)
+		t.Parallel()
+		tlsc, err := CreateServerTLSConfig("testdata/invvalid_tls.crt", "testdata/invalid_tls.key", nil, "")
 		require.Error(t, err)
 		assert.Nil(t, tlsc)
 	})
 
 	t.Run("Self-signed creation fails due to invalid certificates", func(t *testing.T) {
-		tlsc, err := CreateServerTLSConfig("testdata/empty_tls.crt", "testdata/empty_tls.key", nil)
+		t.Parallel()
+		tlsc, err := CreateServerTLSConfig("testdata/empty_tls.crt", "testdata/empty_tls.key", nil, "")
 		require.Error(t, err)
 		assert.Nil(t, tlsc)
+	})
+
+	t.Run("Configuration with client CA", func(t *testing.T) {
+		hook := logtest.NewGlobal()
+		defer hook.Reset()
+
+		tlsc, err := CreateServerTLSConfig("testdata/valid_tls.crt", "testdata/valid_tls.key", []string{"localhost"}, "testdata/valid_tls.crt")
+		require.NoError(t, err)
+		assert.NotNil(t, tlsc.ClientCAs)
+		assert.Equal(t, tls.RequireAndVerifyClientCert, tlsc.ClientAuth)
+		require.NotNil(t, hook.LastEntry())
+		assert.Contains(t, hook.LastEntry().Message, "mTLS enabled for repo-server: requiring client certificates from CA=testdata/valid_tls.crt")
+	})
+
+	t.Run("Self-signed creation with NoClientCert when no ClientCA", func(t *testing.T) {
+		tlsc, err := CreateServerTLSConfig("testdata/nonexistent.crt", "testdata/nonexistent.key", []string{"localhost"}, "")
+		require.NoError(t, err)
+		assert.Equal(t, tls.NoClientCert, tlsc.ClientAuth)
+		assert.Nil(t, tlsc.ClientCAs)
+	})
+
+	t.Run("ClientCA path specified but file does not exist — mTLS skipped", func(t *testing.T) {
+		tlsc, err := CreateServerTLSConfig("testdata/valid_tls.crt", "testdata/valid_tls.key", []string{"localhost"}, "testdata/nonexistent_ca.crt")
+		require.NoError(t, err)
+		assert.NotNil(t, tlsc)
+		assert.Equal(t, tls.NoClientCert, tlsc.ClientAuth)
+		assert.Nil(t, tlsc.ClientCAs)
+	})
+
+	t.Run("ClientCA path specified but stat returns non-ErrNotExist error", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.Chmod(dir, 0o000))
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+		caPath := path.Join(dir, "ca.crt")
+
+		tlsc, err := CreateServerTLSConfig("testdata/valid_tls.crt", "testdata/valid_tls.key", []string{"localhost"}, caPath)
+		require.Error(t, err)
+		assert.Nil(t, tlsc)
+		assert.Contains(t, err.Error(), "could not stat client CA file")
 	})
 }
 
@@ -416,7 +509,9 @@ func getCertFromFile(path string) (*x509.Certificate, error) {
 }
 
 func TestLoadX509CertPool(t *testing.T) {
+	t.Parallel()
 	t.Run("Successfully load single cert", func(t *testing.T) {
+		t.Parallel()
 		p, err := LoadX509CertPool("testdata/valid_tls.crt")
 		require.NoError(t, err)
 		require.NotNil(t, p)
@@ -429,6 +524,7 @@ func TestLoadX509CertPool(t *testing.T) {
 		assert.True(t, groundTruthPool.Equal(p))
 	})
 	t.Run("Successfully load single existing cert from multiple list", func(t *testing.T) {
+		t.Parallel()
 		p, err := LoadX509CertPool("testdata/invalid_tls.crt", "testdata/valid_tls.crt")
 		require.NoError(t, err)
 		require.NotNil(t, p)
@@ -441,6 +537,7 @@ func TestLoadX509CertPool(t *testing.T) {
 		assert.True(t, groundTruthPool.Equal(p))
 	})
 	t.Run("Only non-existing certs in list", func(t *testing.T) {
+		t.Parallel()
 		p, err := LoadX509CertPool("testdata/invalid_tls.crt", "testdata/valid_tls2.crt")
 		require.NoError(t, err)
 		require.NotNil(t, p)
@@ -450,8 +547,367 @@ func TestLoadX509CertPool(t *testing.T) {
 		assert.True(t, groundTruthPool.Equal(p))
 	})
 	t.Run("Invalid cert in requested cert list", func(t *testing.T) {
+		t.Parallel()
 		p, err := LoadX509CertPool("testdata/empty_tls.crt", "testdata/valid_tls2.crt")
 		require.Error(t, err)
 		require.Nil(t, p)
+	})
+}
+
+func TestAddTLSFlagsToCmdWithPrefix(t *testing.T) {
+	t.Run("Empty prefix uses standard environment variables", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		t.Setenv("ARGOCD_TLS_MIN_VERSION", "1.1")
+		AddTLSFlagsToCmdWithPrefix(cmd, "")
+
+		minVersion, err := cmd.Flags().GetString("tlsminversion")
+		require.NoError(t, err)
+		assert.Equal(t, "1.1", minVersion)
+	})
+
+	t.Run("Prefix is used for flag names and environment variables", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		t.Setenv("ARGOCD_SERVER_TLS_MIN_VERSION", "1.1")
+		AddTLSFlagsToCmdWithPrefix(cmd, "server")
+
+		minVersion, err := cmd.Flags().GetString("server-tlsminversion")
+		require.NoError(t, err)
+		assert.Equal(t, "1.1", minVersion)
+	})
+}
+
+func TestAddClientTLSFlagsToCmdWithPrefix(t *testing.T) {
+	t.Run("Empty prefix uses standard environment variables", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		t.Setenv("ARGOCD_REPO_SERVER_CA_CERT_PATH", "test-ca-cert")
+		AddClientTLSFlagsToCmdWithPrefix(cmd, "")
+
+		caCert, err := cmd.Flags().GetString("repo-server-ca-cert-path")
+		require.NoError(t, err)
+		assert.Equal(t, "test-ca-cert", caCert)
+	})
+
+	t.Run("Prefix is used for flag names and environment variables", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		t.Setenv("ARGOCD_APPLICATION_CONTROLLER_REPO_SERVER_CA_CERT_PATH", "test-ca-cert-prefixed")
+		AddClientTLSFlagsToCmdWithPrefix(cmd, "APPLICATION_CONTROLLER")
+
+		caCert, err := cmd.Flags().GetString("repo-server-ca-cert-path")
+		require.NoError(t, err)
+		assert.Equal(t, "test-ca-cert-prefixed", caCert)
+	})
+
+	t.Run("mTLS client certificate is configured only by explicit flags", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		configSrc := AddClientTLSFlagsToCmdWithPrefix(cmd, "")
+		err := cmd.Flags().Set("repo-server-client-cert-path", "test-client-cert")
+		require.NoError(t, err)
+		err = cmd.Flags().Set("repo-server-client-cert-key-path", "test-client-cert-key")
+		require.NoError(t, err)
+
+		config, err := configSrc()
+		require.NoError(t, err)
+		assert.Empty(t, config.ClientCertificates)
+		assert.Equal(t, "test-client-cert", config.ClientCertFile)
+		assert.Equal(t, "test-client-cert-key", config.ClientCertKeyFile)
+	})
+
+	t.Run("Error when client cert is explicitly cleared but key is still set", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		configSrc := AddClientTLSFlagsToCmdWithPrefix(cmd, "")
+		// Explicitly override cert to empty while key retains its default
+		err := cmd.Flags().Set("repo-server-client-cert-path", "")
+		require.NoError(t, err)
+
+		_, err = configSrc()
+		require.ErrorContains(t, err, "--repo-server-client-cert-path is required when --repo-server-client-cert-key-path is specified")
+	})
+
+	t.Run("Error when client cert key is explicitly cleared but cert is still set", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		configSrc := AddClientTLSFlagsToCmdWithPrefix(cmd, "")
+		// Explicitly override key to empty while cert retains its default
+		err := cmd.Flags().Set("repo-server-client-cert-key-path", "")
+		require.NoError(t, err)
+
+		_, err = configSrc()
+		require.ErrorContains(t, err, "--repo-server-client-cert-key-path is required when --repo-server-client-cert-path is specified")
+	})
+
+	t.Run("Default mTLS client cert paths point to auto-mounted Secret", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		configSrc := AddClientTLSFlagsToCmdWithPrefix(cmd, "")
+
+		config, err := configSrc()
+		require.NoError(t, err)
+		assert.Empty(t, config.ClientCertificates)
+		assert.Equal(t, "/app/config/reposerver/mtls/client.crt", config.ClientCertFile)
+		assert.Equal(t, "/app/config/reposerver/mtls/client.key", config.ClientCertKeyFile)
+	})
+
+	t.Run("Repeated invocations do not leak strict validation state", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		configSrc := AddClientTLSFlagsToCmdWithPrefix(cmd, "")
+
+		certFile := path.Join("testdata", "single.pem")
+		err := cmd.Flags().Set("repo-server-ca-cert-path", certFile)
+		require.NoError(t, err)
+
+		configWithCA, err := configSrc()
+		require.NoError(t, err)
+		assert.True(t, configWithCA.StrictValidation)
+		assert.NotNil(t, configWithCA.Certificates)
+
+		err = cmd.Flags().Set("repo-server-ca-cert-path", "")
+		require.NoError(t, err)
+
+		configWithoutCA, err := configSrc()
+		require.NoError(t, err)
+		assert.False(t, configWithoutCA.StrictValidation)
+		assert.Nil(t, configWithoutCA.Certificates)
+	})
+}
+
+func TestEncodeX509KeyPair_InvalidRSAKey(t *testing.T) {
+	t.Parallel()
+	t.Run("Nil RSA private key", func(t *testing.T) {
+		t.Parallel()
+		cert := tls.Certificate{
+			Certificate: [][]byte{{0x30, 0x82}}, // minimal DER certificate bytes
+			PrivateKey:  (*rsa.PrivateKey)(nil),
+		}
+		certPEM, keyPEM := EncodeX509KeyPair(cert)
+		assert.NotEmpty(t, certPEM)
+		assert.Empty(t, keyPEM)
+	})
+
+	t.Run("RSA private key that fails validation", func(t *testing.T) {
+		// Create an RSA key with invalid parameters that will fail Validate()
+		t.Parallel()
+		invalidKey := &rsa.PrivateKey{
+			N: big.NewInt(1), // Too small modulus, will fail validation
+			E: 65537,
+			D: big.NewInt(1), // Invalid private exponent
+		}
+		cert := tls.Certificate{
+			Certificate: [][]byte{{0x30, 0x82}}, // minimal DER certificate bytes
+			PrivateKey:  invalidKey,
+		}
+		certPEM, keyPEM := EncodeX509KeyPair(cert)
+		assert.NotEmpty(t, certPEM)
+		assert.Empty(t, keyPEM)
+	})
+
+	t.Run("RSA private key with inconsistent parameters", func(t *testing.T) {
+		t.Parallel()
+		invalidKey := &rsa.PrivateKey{
+			N: big.NewInt(35),
+			E: 65537,
+			D: big.NewInt(99999),
+		}
+		cert := tls.Certificate{
+			Certificate: [][]byte{{0x30, 0x82}}, // minimal DER certificate bytes
+			PrivateKey:  invalidKey,
+		}
+		certPEM, keyPEM := EncodeX509KeyPair(cert)
+		assert.NotEmpty(t, certPEM)
+		assert.Empty(t, keyPEM)
+	})
+
+	t.Run("Unsupported private key type", func(t *testing.T) {
+		// Use a type that's not *rsa.PrivateKey or *ecdsa.PrivateKey
+		t.Parallel()
+		cert := tls.Certificate{
+			Certificate: [][]byte{{0x30, 0x82}}, // minimal DER certificate bytes
+			PrivateKey:  "not a private key",    // Unsupported type
+		}
+		certPEM, keyPEM := EncodeX509KeyPair(cert)
+		assert.NotEmpty(t, certPEM)
+		assert.Empty(t, keyPEM)
+	})
+
+	t.Run("Valid RSA private key should work", func(t *testing.T) {
+		// Generate a valid RSA key for testing
+		t.Parallel()
+		opts := CertOptions{Hosts: []string{"localhost"}, Organization: "Test"}
+		validCert, err := GenerateX509KeyPair(opts)
+		require.NoError(t, err)
+
+		certPEM, keyPEM := EncodeX509KeyPair(*validCert)
+		assert.NotEmpty(t, certPEM)
+		assert.NotEmpty(t, keyPEM)
+		assert.Contains(t, string(keyPEM), "-----BEGIN RSA PRIVATE KEY-----")
+		assert.Contains(t, string(keyPEM), "-----END RSA PRIVATE KEY-----")
+	})
+}
+
+func TestGenerateHealthCheckClientCert(t *testing.T) {
+	cert, err := GenerateHealthCheckClientCert()
+	require.NoError(t, err)
+	require.NotNil(t, cert)
+	require.NotEmpty(t, cert.Certificate)
+
+	parsed, err := x509.ParseCertificate(cert.Certificate[0])
+	require.NoError(t, err)
+
+	assert.Equal(t, parsed.Subject.String(), parsed.Issuer.String(), "health-check cert must be self-signed")
+	assert.True(t, parsed.IsCA, "health-check cert must have IsCA=true to be usable in a ClientCAs pool")
+	require.Len(t, parsed.ExtKeyUsage, 1)
+	assert.Equal(t, x509.ExtKeyUsageClientAuth, parsed.ExtKeyUsage[0], "health-check cert must only carry ExtKeyUsageClientAuth, not ExtKeyUsageServerAuth")
+
+	assert.NotNil(t, cert.Leaf)
+}
+
+func TestGenerateHealthCheckClientCert_IsRegistrableAsClientCA(t *testing.T) {
+	cert, err := GenerateHealthCheckClientCert()
+	require.NoError(t, err)
+
+	parsed, err := x509.ParseCertificate(cert.Certificate[0])
+	require.NoError(t, err)
+
+	pool := x509.NewCertPool()
+	assert.NotPanics(t, func() { pool.AddCert(parsed) })
+}
+
+func TestAddClientTLSFlagsToCmdWithPrefix_NoCACert_StrictValidationIsFalse(t *testing.T) {
+	cmd := &cobra.Command{}
+	src := AddClientTLSFlagsToCmdWithPrefix(cmd, "")
+
+	cfg, err := src()
+	require.NoError(t, err)
+	assert.False(t, cfg.StrictValidation)
+	assert.Nil(t, cfg.Certificates)
+}
+
+func TestAddClientTLSFlagsToCmdWithPrefix_CACertSetsStrictValidation(t *testing.T) {
+	cmd := &cobra.Command{}
+	src := AddClientTLSFlagsToCmdWithPrefix(cmd, "")
+
+	require.NoError(t, cmd.Flags().Set("repo-server-ca-cert-path", "testdata/single.pem"))
+
+	cfg, err := src()
+	require.NoError(t, err)
+
+	assert.True(t, cfg.StrictValidation,
+		"providing --repo-server-ca-cert must imply StrictValidation=true")
+	assert.NotNil(t, cfg.Certificates,
+		"CA cert pool must be populated when --repo-server-ca-cert is set")
+}
+
+func TestStrictValidationOverride_ORSemantics(t *testing.T) {
+	cases := []struct {
+		name            string
+		setCACert       bool // simulate --repo-server-ca-cert being provided
+		legacyFlagValue bool // value of --repo-server-strict-tls
+		wantStrict      bool
+		wantPoolNonNil  bool
+	}{
+		{
+			name:            "no CA cert, legacy flag false → insecure",
+			setCACert:       false,
+			legacyFlagValue: false,
+			wantStrict:      false,
+			wantPoolNonNil:  false,
+		},
+		{
+			name:            "no CA cert, legacy flag true → strict via legacy path",
+			setCACert:       false,
+			legacyFlagValue: true,
+			wantStrict:      true,
+			wantPoolNonNil:  false, // pool populated by component's legacy block, not here
+		},
+		{
+			name:            "CA cert set, legacy flag false → strict because CA cert implies it",
+			setCACert:       true,
+			legacyFlagValue: false,
+			wantStrict:      true, // THE BUG: was false before the fix
+			wantPoolNonNil:  true,
+		},
+		{
+			name:            "CA cert set, legacy flag true → strict (both agree)",
+			setCACert:       true,
+			legacyFlagValue: true,
+			wantStrict:      true,
+			wantPoolNonNil:  true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			src := AddClientTLSFlagsToCmdWithPrefix(cmd, "")
+
+			if tc.setCACert {
+				require.NoError(t, cmd.Flags().Set("repo-server-ca-cert-path", "testdata/single.pem"))
+			}
+
+			// Step 1: get config from the new flag helper (Layer 1).
+			cfg, err := src()
+			require.NoError(t, err)
+
+			// Step 2: simulate the component's RunE override using OR semantics (the fix).
+			cfg.StrictValidation = cfg.StrictValidation || tc.legacyFlagValue
+
+			assert.Equal(t, tc.wantStrict, cfg.StrictValidation,
+				"StrictValidation after OR-based override")
+			if tc.wantPoolNonNil {
+				assert.NotNil(t, cfg.Certificates,
+					"Certificates pool must be populated when CA cert was provided")
+			}
+		})
+	}
+}
+
+func TestStrictValidationOverride_OldAssignmentSemantics_DocumentsBug(t *testing.T) {
+	cmd := &cobra.Command{}
+	src := AddClientTLSFlagsToCmdWithPrefix(cmd, "")
+	require.NoError(t, cmd.Flags().Set("repo-server-ca-cert-path", "testdata/single.pem"))
+
+	cfg, err := src()
+	require.NoError(t, err)
+
+	require.True(t, cfg.StrictValidation, "pre-condition: CA cert must set StrictValidation=true")
+
+	legacyFlag := false
+	cfg.StrictValidation = legacyFlag // old code: = not ||
+
+	assert.False(t, cfg.StrictValidation,
+		"BUG REPRODUCED: old = semantics silently discard StrictValidation=true set by CA cert flag")
+	assert.NotNil(t, cfg.Certificates,
+		"pool is non-nil but StrictValidation=false → buildTLSClientConfig's fallback saves us,"+
+			" but the struct state is incoherent")
+}
+
+func TestClientCertFlags_BothRequiredOrNeither(t *testing.T) {
+	t.Run("cert explicitly cleared while key retains default returns error", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		src := AddClientTLSFlagsToCmdWithPrefix(cmd, "")
+		// Clear cert so that key (default) is set but cert is empty
+		require.NoError(t, cmd.Flags().Set("repo-server-client-cert-path", ""))
+
+		_, err := src()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--repo-server-client-cert-path is required")
+	})
+
+	t.Run("key explicitly cleared while cert retains default returns error", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		src := AddClientTLSFlagsToCmdWithPrefix(cmd, "")
+		// Clear key so that cert (default) is set but key is empty
+		require.NoError(t, cmd.Flags().Set("repo-server-client-cert-key-path", ""))
+
+		_, err := src()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--repo-server-client-cert-key-path is required")
+	})
+
+	t.Run("default cert and key paths point to auto-mounted Secret", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		src := AddClientTLSFlagsToCmdWithPrefix(cmd, "")
+
+		cfg, err := src()
+		require.NoError(t, err)
+		assert.Equal(t, "/app/config/reposerver/mtls/client.crt", cfg.ClientCertFile)
+		assert.Equal(t, "/app/config/reposerver/mtls/client.key", cfg.ClientCertKeyFile)
 	})
 }

@@ -14,6 +14,7 @@ type testStruct struct {
 }
 
 func TestCache(t *testing.T) {
+	t.Parallel()
 	c := NewInMemoryCache(time.Hour)
 	var obj testStruct
 	err := c.Get("key", &obj)
@@ -29,8 +30,8 @@ func TestCache(t *testing.T) {
 	cacheObj.Foo = "baz"
 	err = c.Get("key", &obj)
 	require.NoError(t, err)
-	assert.EqualValues(t, "foo", obj.Foo)
-	assert.EqualValues(t, "bar", string(obj.Bar))
+	assert.Equal(t, "foo", obj.Foo)
+	assert.Equal(t, "bar", string(obj.Bar))
 
 	err = c.Delete("key")
 	require.NoError(t, err)

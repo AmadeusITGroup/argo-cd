@@ -8,15 +8,14 @@ import (
 	"strings"
 	"testing"
 
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
-	"github.com/argoproj/argo-cd/v2/common"
-	"github.com/argoproj/argo-cd/v2/util/assets"
-	"github.com/argoproj/argo-cd/v2/util/rbac"
+	"github.com/argoproj/argo-cd/v3/common"
+	"github.com/argoproj/argo-cd/v3/util/assets"
+	"github.com/argoproj/argo-cd/v3/util/rbac"
 
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,20 +33,16 @@ func newTestTerminalSession(w http.ResponseWriter, r *http.Request) terminalSess
 
 func newEnforcer() *rbac.Enforcer {
 	additionalConfig := make(map[string]string, 0)
-	kubeclientset := fake.NewSimpleClientset(&v1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      "argocd-cm",
-			Labels: map[string]string{
-				"app.kubernetes.io/part-of": "argocd",
-			},
+	kubeclientset := fake.NewClientset(&corev1.ConfigMap{
+		Namespace: testNamespace,
+		Name:      "argocd-cm",
+		Labels: map[string]string{
+			"app.kubernetes.io/part-of": "argocd",
 		},
 		Data: additionalConfig,
-	}, &v1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "argocd-secret",
-			Namespace: testNamespace,
-		},
+	}, &corev1.Secret{
+		Name:      "argocd-secret",
+		Namespace: testNamespace,
 		Data: map[string][]byte{
 			"admin.password":   []byte("test"),
 			"server.secretkey": []byte("test"),
@@ -64,6 +59,7 @@ func reconnect(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestReconnect(t *testing.T) {
+	t.Parallel()
 	s := httptest.NewServer(http.HandlerFunc(reconnect))
 	defer s.Close()
 
@@ -86,6 +82,7 @@ func TestReconnect(t *testing.T) {
 }
 
 func testServerConnection(t *testing.T, testFunc func(w http.ResponseWriter, r *http.Request), expectPermissionDenied bool) {
+	t.Helper()
 	s := httptest.NewServer(http.HandlerFunc(testFunc))
 	defer s.Close()
 
@@ -109,6 +106,7 @@ func testServerConnection(t *testing.T, testFunc func(w http.ResponseWriter, r *
 }
 
 func TestVerifyAndReconnectDisableAuthTrue(t *testing.T) {
+	t.Parallel()
 	validate := func(w http.ResponseWriter, r *http.Request) {
 		ts := newTestTerminalSession(w, r)
 		// Currently testing only the usecase of disableAuth: true since the disableAuth: false case
@@ -125,18 +123,19 @@ func TestVerifyAndReconnectDisableAuthTrue(t *testing.T) {
 }
 
 func TestValidateWithAdminPermissions(t *testing.T) {
+	t.Parallel()
 	validate := func(w http.ResponseWriter, r *http.Request) {
 		enf := newEnforcer()
 		_ = enf.SetBuiltinPolicy(assets.BuiltinPolicyCSV)
 		enf.SetDefaultRole("role:admin")
-		enf.SetClaimsEnforcerFunc(func(claims jwt.Claims, rvals ...interface{}) bool {
+		enf.SetClaimsEnforcerFunc(func(_ jwt.Claims, _ ...any) bool {
 			return true
 		})
 		ts := newTestTerminalSession(w, r)
 		ts.terminalOpts = &TerminalOptions{Enf: enf}
 		ts.appRBACName = "test"
-		// nolint:staticcheck
-		ts.ctx = context.WithValue(context.Background(), "claims", &jwt.MapClaims{"groups": []string{"admin"}})
+		//nolint:staticcheck
+		ts.ctx = context.WithValue(t.Context(), "claims", &jwt.MapClaims{"groups": []string{"admin"}})
 		_, err := ts.validatePermissions([]byte{})
 		require.NoError(t, err)
 	}
@@ -145,22 +144,132 @@ func TestValidateWithAdminPermissions(t *testing.T) {
 }
 
 func TestValidateWithoutPermissions(t *testing.T) {
+	t.Parallel()
 	validate := func(w http.ResponseWriter, r *http.Request) {
 		enf := newEnforcer()
 		_ = enf.SetBuiltinPolicy(assets.BuiltinPolicyCSV)
 		enf.SetDefaultRole("role:test")
-		enf.SetClaimsEnforcerFunc(func(claims jwt.Claims, rvals ...interface{}) bool {
+		enf.SetClaimsEnforcerFunc(func(_ jwt.Claims, _ ...any) bool {
 			return false
 		})
 		ts := newTestTerminalSession(w, r)
 		ts.terminalOpts = &TerminalOptions{Enf: enf}
 		ts.appRBACName = "test"
-		// nolint:staticcheck
-		ts.ctx = context.WithValue(context.Background(), "claims", &jwt.MapClaims{"groups": []string{"test"}})
+		//nolint:staticcheck
+		ts.ctx = context.WithValue(t.Context(), "claims", &jwt.MapClaims{"groups": []string{"test"}})
 		_, err := ts.validatePermissions([]byte{})
 		require.Error(t, err)
-		assert.Equal(t, permissionDeniedErr.Error(), err.Error())
+		assert.EqualError(t, err, common.PermissionDeniedAPIError.Error())
 	}
 
 	testServerConnection(t, validate, true)
+}
+
+func TestTerminalSession_Write(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		require.NoError(t, err)
+		defer conn.Close()
+
+		for {
+			// Read the message from the WebSocket connection
+			messageType, message, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			// Respond back the same message
+			err = conn.WriteMessage(messageType, message)
+			require.NoError(t, err)
+		}
+	}))
+	defer server.Close()
+
+	u := "ws" + strings.TrimPrefix(server.URL, "http")
+	wsConn, _, err := websocket.DefaultDialer.Dial(u, nil)
+	require.NoError(t, err)
+	defer wsConn.Close()
+
+	ts := terminalSession{
+		wsConn: wsConn,
+	}
+
+	testData := []byte("hello world")
+	expectedMessage, err := json.Marshal(TerminalMessage{
+		Operation: "stdout",
+		Data:      string(testData),
+	})
+	require.NoError(t, err)
+
+	n, err := ts.Write(testData)
+	require.NoError(t, err)
+
+	assert.Equal(t, len(testData), n)
+
+	_, receivedMessage, err := wsConn.ReadMessage()
+	require.NoError(t, err)
+
+	assert.Equal(t, expectedMessage, receivedMessage)
+}
+
+func TestGetToken(t *testing.T) {
+	t.Parallel()
+	// jwtutil.IsValid only checks JWT shape (three dot-separated segments).
+	const tokenValue = "header.payload.signature"
+	const cookieToken = "cookie.payload.signature"
+
+	t.Run("bearer token in Authorization header", func(t *testing.T) {
+		t.Parallel()
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/terminal", http.NoBody)
+		r.Header.Set("Authorization", "Bearer "+tokenValue)
+		token, err := getToken(r)
+		require.NoError(t, err)
+		assert.Equal(t, tokenValue, token)
+	})
+
+	t.Run("auth cookie when no Authorization header", func(t *testing.T) {
+		t.Parallel()
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/terminal", http.NoBody)
+		r.AddCookie(&http.Cookie{Name: common.AuthCookieName, Value: tokenValue})
+		token, err := getToken(r)
+		require.NoError(t, err)
+		assert.Equal(t, tokenValue, token)
+	})
+
+	t.Run("bearer token preferred over cookie", func(t *testing.T) {
+		t.Parallel()
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/terminal", http.NoBody)
+		r.Header.Set("Authorization", "Bearer "+tokenValue)
+		r.AddCookie(&http.Cookie{Name: common.AuthCookieName, Value: cookieToken})
+		token, err := getToken(r)
+		require.NoError(t, err)
+		assert.Equal(t, tokenValue, token)
+	})
+
+	t.Run("invalid bearer falls back to valid cookie", func(t *testing.T) {
+		t.Parallel()
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/terminal", http.NoBody)
+		r.Header.Set("Authorization", "Bearer not-a-jwt")
+		r.AddCookie(&http.Cookie{Name: common.AuthCookieName, Value: cookieToken})
+		token, err := getToken(r)
+		require.NoError(t, err)
+		assert.Equal(t, cookieToken, token)
+	})
+
+	t.Run("rejects invalid bearer without cookie", func(t *testing.T) {
+		t.Parallel()
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/terminal", http.NoBody)
+		r.Header.Set("Authorization", "Bearer not-a-jwt")
+		_, err := getToken(r)
+		require.Error(t, err)
+	})
+
+	t.Run("rejects invalid cookie token", func(t *testing.T) {
+		t.Parallel()
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/terminal", http.NoBody)
+		r.AddCookie(&http.Cookie{Name: common.AuthCookieName, Value: "not-a-jwt"})
+		_, err := getToken(r)
+		require.Error(t, err)
+	})
 }

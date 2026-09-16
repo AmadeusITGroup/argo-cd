@@ -1,11 +1,15 @@
 package utils
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
+	"text/template"
 
 	"sigs.k8s.io/yaml"
 )
+
+const TPL_FUNC_MAX_RECURSION_DEPTH = 3
 
 // SanitizeName sanitizes the name in accordance with the below rules
 // 1. contain no more than 253 characters
@@ -29,7 +33,7 @@ func SanitizeName(name string) string {
 // always return a string, even on marshal error (empty string).
 //
 // This is designed to be called from a template.
-func toYAML(v interface{}) (string, error) {
+func toYAML(v any) (string, error) {
 	data, err := yaml.Marshal(v)
 	if err != nil {
 		// Swallow errors inside of a template.
@@ -39,14 +43,14 @@ func toYAML(v interface{}) (string, error) {
 }
 
 // This has been copied from helm and may be removed as soon as it is retrofited in sprig
-// fromYAML converts a YAML document into a map[string]interface{}.
+// fromYAML converts a YAML document into a map[string]any.
 //
 // This is not a general-purpose YAML parser, and will not parse all valid
 // YAML documents. Additionally, because its intended use is within templates
 // it tolerates errors. It will insert the returned error message string into
 // m["Error"] in the returned map.
-func fromYAML(str string) (map[string]interface{}, error) {
-	m := map[string]interface{}{}
+func fromYAML(str string) (map[string]any, error) {
+	m := map[string]any{}
 
 	if err := yaml.Unmarshal([]byte(str), &m); err != nil {
 		return nil, err
@@ -55,17 +59,64 @@ func fromYAML(str string) (map[string]interface{}, error) {
 }
 
 // This has been copied from helm and may be removed as soon as it is retrofited in sprig
-// fromYAMLArray converts a YAML array into a []interface{}.
+// fromYAMLArray converts a YAML array into a []any.
 //
 // This is not a general-purpose YAML parser, and will not parse all valid
 // YAML documents. Additionally, because its intended use is within templates
 // it tolerates errors. It will insert the returned error message string as
 // the first and only item in the returned array.
-func fromYAMLArray(str string) ([]interface{}, error) {
-	a := []interface{}{}
+func fromYAMLArray(str string) ([]any, error) {
+	a := []any{}
 
 	if err := yaml.Unmarshal([]byte(str), &a); err != nil {
 		return nil, err
 	}
 	return a, nil
+}
+
+// This has been copied from helm but adapted to our needs as we have a more limited use case for
+// https://github.com/helm/helm/blob/ee018608f6fbf381fac1bae9759164a65c6a0b1f/pkg/engine/engine.go#L153-L195
+func tplFun(parent *template.Template) func(string, any) (string, error) {
+	callDepth := 0
+	return func(tpl string, vals any) (string, error) {
+		callDepth++
+		defer func() {
+			callDepth--
+		}()
+
+		if callDepth > TPL_FUNC_MAX_RECURSION_DEPTH {
+			return "", fmt.Errorf("maximum recursion depth %d exceeded in tpl function", TPL_FUNC_MAX_RECURSION_DEPTH)
+		}
+
+		t, err := parent.Clone()
+		if err != nil {
+			return "", fmt.Errorf("cannot clone template: %w", err)
+		}
+
+		// We need a .New template, as template text which is just blanks
+		// or comments after parsing out defines just adds new named
+		// template definitions without changing the main template.
+		// https://pkg.go.dev/text/template#Template.Parse
+		// Use the parent's name for lack of a better way to identify the tpl
+		// text string. (Maybe we could use a hash appended to the name?)
+		t, err = t.New(parent.Name()).Parse(tpl)
+		if err != nil {
+			return "", fmt.Errorf("cannot parse template %q: %w", tpl, err)
+		}
+
+		var buf strings.Builder
+		if err := t.Execute(&buf, vals); err != nil {
+			return "", fmt.Errorf("error during tpl function execution for %q: %w", tpl, err)
+		}
+
+		return strings.ReplaceAll(buf.String(), "<no value>", ""), nil
+	}
+}
+
+// withTplFunc registers the "tpl" function on t, bound to t itself rather than
+// to a fixed parent. This must happen after per-call settings (e.g. Option())
+// are applied, so nested "tpl" calls inherit the same options and functions
+// instead of falling back to a statically bound template.
+func withTplFunc(t *template.Template) *template.Template {
+	return t.Funcs(template.FuncMap{"tpl": tplFun(t)})
 }
